@@ -11,7 +11,7 @@ import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'git_backup',
-  'version': '1.0.1',
+  'version': '1.0.2',
   'name': 'GitBackUp',
   'description': 'Minecraft Git Backup Plugin',
   'author': 'zyxgad',
@@ -24,7 +24,7 @@ PLUGIN_METADATA = {
 default_config = {
   'git_path': 'git',
   'git_config': {
-    'remote': 'https://github.com/',
+    'remote': 'https://github.com/user/repo.git',
     'remote_name': 'backup',
     'branch_name': 'backup',
     'is_setup': False
@@ -119,7 +119,7 @@ def get_backup_info(bid: str or int):
   raise TypeError('bid must be "int" or "str"')
 
 def timerCall():
-  global backup_timer, need_backup, SERVER_OBJ
+  global backup_timer, need_backup
   backup_timer = None
   if not need_backup:
     return
@@ -131,6 +131,7 @@ def flushTimer():
   if backup_timer is not None:
     backup_timer.cancel()
     backup_timer = None
+  global need_backup
   if need_backup:
     tnow = time.time()
     bkinterval = config['backup_interval'] - (tnow - config['last_backup_time'])
@@ -141,9 +142,10 @@ def flushTimer():
     backup_timer.start()
 
 def flushTimer0():
+  global need_backup
   config['last_backup_time'] = time.time()
   if need_backup:
-    SERVER_OBJ.broadcast('[GBU] Flush backup timer\n[GBU] the next backup will make after {} sec'.format(config['backup_interval']))
+    SERVER_OBJ.broadcast('[GBU] Flush backup timer\n[GBU] the next backup will make after {:.1f} sec'.format(float(config['backup_interval'])))
     flushTimer()
 
 ######## COMMANDS ########
@@ -168,7 +170,7 @@ def command_list_backup(source: MCDR.CommandSource, limit: int or None = None):
 def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
   global what_is_doing
   if what_is_doing is not None:
-    send_message(source, f'Is {what_is_doing} now')
+    send_message(source, f'Error: is {what_is_doing} now')
     flushTimer0()
     return
   what_is_doing = 'making backup'
@@ -211,7 +213,7 @@ def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
 def command_back_backup(source: MCDR.CommandSource, bid):
   global what_is_doing
   if what_is_doing is not None:
-    send_message(source, f'Is {what_is_doing} now')
+    send_message(source, f'Error: is {what_is_doing} now')
     return
 
   if isinstance(bid, str) and bid[0] == ':': bid = int(bid[1:])
@@ -222,7 +224,7 @@ def command_back_backup(source: MCDR.CommandSource, bid):
   def call(source: MCDR.CommandSource):
     global what_is_doing
     if what_is_doing is not None:
-      send_message(source, f'Is {what_is_doing} now')
+      send_message(source, f'Error: is {what_is_doing} now')
       return
     what_is_doing = 'backuping'
 
@@ -296,7 +298,7 @@ def _command_push_backup(source: MCDR.CommandSource):
     return
   global what_is_doing
   if what_is_doing is not None:
-    send_message(source, f'Is {what_is_doing} now')
+    send_message(source, f'Error: is {what_is_doing} now')
     return
   what_is_doing = 'pushing'
 
@@ -304,11 +306,11 @@ def _command_push_backup(source: MCDR.CommandSource):
   ecode, out, err = run_git_cmd('push', '-f', '-q')
   if ecode != 0:
     send_message(source, 'Push error:\n' + err)
+    what_is_doing = None
     return
 
   config['last_push_time'] = time.time()
   send_message(source, 'Push SUCCESS:\n' + out)
-
   what_is_doing = None
 
 def command_confirm(source: MCDR.CommandSource):
@@ -332,18 +334,24 @@ def command_abort(source: MCDR.CommandSource):
 def on_load(server :MCDR.ServerInterface, prev_module):
   global need_backup, SERVER_OBJ
   SERVER_OBJ = server
+
+  load_config(server)
+  need_backup = config['backup_interval'] > 0
+
   if prev_module is None:
     server.logger.info('GitBackUp is on load')
   else:
     server.logger.info('GitBackUp is on reload')
+    if need_backup and server.is_server_startup():
+      flushTimer()
 
   what_is_doing = None
 
-  load_config(server)
   setup_git(server)
   register_command(server)
 
 def on_unload(server: MCDR.ServerInterface):
+  global need_backup
   server.logger.info('GitBackUp is on unload')
   need_backup = False
   flushTimer()
@@ -352,10 +360,10 @@ def on_unload(server: MCDR.ServerInterface):
   SERVER_OBJ = None
 
 def on_remove(server: MCDR.ServerInterface):
+  global need_backup
   server.logger.info('GitBackUp is on disable')
-  if backup_timer is not None:
-    backup_timer.cancel()
-    backup_timer = None
+  need_backup = False
+  flushTimer()
   with open(CONFIG_FILE, 'w') as file:
     json.dump(config, file, indent=4)
 
@@ -363,7 +371,7 @@ def on_remove(server: MCDR.ServerInterface):
   SERVER_OBJ = None
 
 def on_server_startup(server: MCDR.ServerInterface):
-  need_backup = config['backup_interval'] > 0
+  server.logger.info('[GBU] server is startup')
   if need_backup:
     flushTimer()
 
