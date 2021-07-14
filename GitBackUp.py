@@ -53,6 +53,7 @@ default_config = {
     'confirm': 1,
     'abort':   1,
     'reload':  2,
+    'save':    2,
     'push':    2,
     'pull':    2
   },
@@ -69,7 +70,7 @@ HelpMessage = '''
 {0} confirm <id> 确认回档
 {0} abort 取消回档
 {0} reload 重新加载配置文件
-{0} reload 保存配置文件
+{0} save 保存配置文件
 {0} push 将备份信息推送到远程服务器
 {0} pull 拉取远程服务器的备份信息
 ============ {1} v{2} ============
@@ -192,7 +193,7 @@ def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
       if os.path.exists(tg): rmfile(tg)
       if os.path.exists(sc): copyfile(sc, tg)
     send_message(source, 'Commiting backup {}...'.format(common))
-    run_git_cmd('add', '.')
+    run_git_cmd('add', '--all')
     ecode, out, err = run_git_cmd('commit', '-m', common)
     if ecode != 0:
       send_message(source, 'Make backup {0} ERROR:\n{1}'.format(common, err))
@@ -431,7 +432,7 @@ def setup_git(server: MCDR.ServerInterface):
   if config['git_config']['remote'] is not None:
     server.logger.info('git remote: {}'.format(config['git_config']['remote']))
   if not config['git_config']['is_setup']:
-    _run_git_cmd_hp('add', '.')
+    _run_git_cmd_hp('add', '--all')
     _run_git_cmd_hp('commit', '-m', '"{}=Setup commit"'.format(get_format_time()))
     if config['git_config']['remote'] is not None:
       proc = subprocess.Popen(
