@@ -11,7 +11,7 @@ import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'git_backup',
-  'version': '1.0.0',
+  'version': '1.0.1',
   'name': 'GitBackUp',
   'description': 'Minecraft Git Backup Plugin',
   'author': 'zyxgad',
@@ -21,7 +21,7 @@ PLUGIN_METADATA = {
   }
 }
 
-config = {
+default_config = {
   'git_path': 'git',
   'git_config': {
     'remote': 'https://github.com/',
@@ -56,7 +56,7 @@ config = {
     'pull':    2
   },
 }
-default_config = config.copy()
+config = default_config.copy()
 CONFIG_FILE = os.path.join('config', 'GitBackUp.json')
 Prefix = '!!gbk'
 HelpMessage = '''
@@ -68,6 +68,7 @@ HelpMessage = '''
 {0} confirm <id> 确认回档
 {0} abort 取消回档
 {0} reload 重新加载配置文件
+{0} reload 保存配置文件
 {0} push 将备份信息推送到远程服务器
 {0} pull 拉取远程服务器的备份信息
 ============ {1} v{2} ============
@@ -83,7 +84,9 @@ abort_callback = None
 backup_timer = None
 need_backup = False
 
-def send_message(source: MCDR.CommandSource, *args, sep=' ', format_='[GBU] {msg}'):
+def send_message(source: MCDR.CommandSource or None, *args, sep=' ', format_='[GBU] {msg}'):
+  if source is None:
+    return
   msg = format_.format(msg=sep.join(args))
   (source.get_server().say if source.is_player else source.reply)(msg)
 
@@ -120,6 +123,7 @@ def timerCall():
   backup_timer = None
   if not need_backup:
     return
+  SERVER_OBJ.broadcast('[GBU] Auto backuping...')
   command_make_backup(MCDR.PluginCommandSource(SERVER_OBJ), 'Auto backup')
 
 def flushTimer():
@@ -136,10 +140,10 @@ def flushTimer():
     backup_timer = Timer(bkinterval, timerCall)
     backup_timer.start()
 
-def flushTimer0(server: MCDR.ServerInterface):
+def flushTimer0():
   config['last_backup_time'] = time.time()
   if need_backup:
-    source.get_server().broadcast('[GBU] Flush backup timer\n[GBU] the next backup will make after {} sec'.format(config['backup_interval']))
+    SERVER_OBJ.broadcast('[GBU] Flush backup timer\n[GBU] the next backup will make after {} sec'.format(config['backup_interval']))
     flushTimer()
 
 ######## COMMANDS ########
@@ -192,7 +196,9 @@ def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
     flushTimer0()
     what_is_doing = None
 
-    if config['push_interval'] > 0 and config['last_push_time'] + config['push_interval'] < time.time():
+    if config['push_interval'] > 0 and \
+      config['last_push_time'] + config['push_interval'] < time.time() and \
+      config['git_config']['remote'] is not None:
       send_message(source, 'pushing now...')
       _command_push_backup(source)
 
@@ -285,6 +291,9 @@ def command_push_backup(source: MCDR.CommandSource):
   _command_push_backup(source)
 
 def _command_push_backup(source: MCDR.CommandSource):
+  if config['git_config']['remote'] is None:
+    send_message(source, 'No remote url')
+    return
   global what_is_doing
   if what_is_doing is not None:
     send_message(source, f'Is {what_is_doing} now')
@@ -327,9 +336,8 @@ def on_load(server :MCDR.ServerInterface, prev_module):
     server.logger.info('GitBackUp is on load')
   else:
     server.logger.info('GitBackUp is on reload')
-  need_backup = config['backup_interval'] > 0
-  if need_backup:
-    flushTimer()
+
+  what_is_doing = None
 
   load_config(server)
   setup_git(server)
@@ -353,6 +361,11 @@ def on_remove(server: MCDR.ServerInterface):
 
   global SERVER_OBJ
   SERVER_OBJ = None
+
+def on_server_startup(server: MCDR.ServerInterface):
+  need_backup = config['backup_interval'] > 0
+  if need_backup:
+    flushTimer()
 
 def on_info(server: MCDR.ServerInterface, info: MCDR.Info):
   if not info.is_user:
@@ -385,7 +398,8 @@ def setup_git(server: MCDR.ServerInterface):
     _run_git_cmd_hp('checkout', '-b', config['git_config']['branch_name'])
     _run_git_cmd_hp('remote', 'add', config['git_config']['remote_name'], config['git_config']['remote'])
     _run_git_cmd_hp('config', 'credential.helper', 'store')
-    _run_git_cmd_hp('pull', '--set-upstream', config['git_config']['remote_name'], config['git_config']['branch_name'])
+    if config['git_config']['remote'] is not None:
+      _run_git_cmd_hp('pull', '--set-upstream', config['git_config']['remote_name'], config['git_config']['branch_name'])
 
   ecode, out, _ = run_git_cmd('remote', 'get-url', config['git_config']['remote_name'])
   server.logger.info(out)
@@ -393,22 +407,26 @@ def setup_git(server: MCDR.ServerInterface):
     server.logger.info('new url: ' + config['git_config']['remote'])
     _run_git_cmd_hp('remote', 'set-url', config['git_config']['remote_name'], config['git_config']['remote'])
 
+  with open(os.path.join(config['backup_path'], '.gitignore'), 'w') as fd:
+    fd.write('#Make by GitBackUp at {}\n'.format(get_format_time()))
+    fd.writelines(config['ignores'])
+
+  if config['git_config']['remote'] is not None:
+    server.logger.info('git remote: {}'.format(config['git_config']['remote']))
   if not config['git_config']['is_setup']:
-    with open(os.path.join(config['backup_path'], '.gitignore'), 'w') as fd:
-      fd.write('#Make by GitBackUp at {}\n'.format(get_format_time()))
-      fd.writelines(config['ignores'])
     _run_git_cmd_hp('add', '.')
     _run_git_cmd_hp('commit', '-m', '"{}=Setup commit"'.format(get_format_time()))
-    proc = subprocess.Popen(
-      '{git} -C {path} push -u {remote_name} {branch}'.format(
-        git=config['git_path'], path=config['backup_path'],
-        branch=config['git_config']['branch_name'], remote_name=config['git_config']['remote_name']),
-      shell=True,
-      stdout=sys.stdout, stderr=sys.stdout, stdin=sys.stdin,
-      bufsize=-1)
-    ecode = proc.wait()
-    if ecode is not None and ecode != 0:
-      raise RuntimeError('first push error')
+    if config['git_config']['remote'] is not None:
+      proc = subprocess.Popen(
+        '{git} -C {path} push -u {remote_name} {branch}'.format(
+          git=config['git_path'], path=config['backup_path'],
+          branch=config['git_config']['branch_name'], remote_name=config['git_config']['remote_name']),
+        shell=True,
+        stdout=sys.stdout, stderr=sys.stdout, stdin=sys.stdin,
+        bufsize=-1)
+      ecode = proc.wait()
+      if ecode is not None and ecode != 0:
+        raise RuntimeError('first push error')
     config['git_config']['is_setup'] = True
 
 def register_command(server: MCDR.ServerInterface):
@@ -433,6 +451,7 @@ def register_command(server: MCDR.ServerInterface):
     then(get_literal_node('confirm').runs(command_confirm)).
     then(get_literal_node('abort').runs(command_abort)).
     then(get_literal_node('reload').runs(lambda src: load_config(server, src))).
+    then(get_literal_node('save').runs(lambda src: save_config(server, src))).
     then(get_literal_node('push').runs(lambda src: command_push_backup(src)))
   )
 
@@ -445,15 +464,18 @@ def load_config(server: MCDR.ServerInterface, source: MCDR.CommandSource or None
     for key in default_config.keys():
       config[key] = js[key]
     server.logger.info('Config file loaded')
-    if source is not None:
-      send_message(source, '配置文件加载成功')
+    send_message(source, '配置文件加载成功')
   except:
     server.logger.info('Fail to read config file, using default value')
-    if source is not None:
-      send_message(source, '配置文件加载失败, 切换默认配置')
-    config = default_config
-    with open(CONFIG_FILE, 'w') as file:
-      json.dump(config, file, indent=4)
+    send_message(source, '配置文件加载失败, 切换默认配置')
+    config = default_config.copy()
+    save_config(server, source)
+
+def save_config(server: MCDR.ServerInterface, source: MCDR.CommandSource or None = None):
+  with open(CONFIG_FILE, 'w') as file:
+    json.dump(config, file, indent=4)
+    server.logger.info('Config file saved')
+    send_message(source, '配置文件保存成功')
 
 
 ################## UTILS ##################
