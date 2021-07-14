@@ -11,7 +11,7 @@ import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'git_backup',
-  'version': '1.0.2',
+  'version': '1.0.3',
   'name': 'GitBackUp',
   'description': 'Minecraft Git Backup Plugin',
   'author': 'zyxgad',
@@ -22,6 +22,7 @@ PLUGIN_METADATA = {
 }
 
 default_config = {
+  'debug': False,
   'git_path': 'git',
   'git_config': {
     'remote': 'https://github.com/user/repo.git',
@@ -64,7 +65,7 @@ HelpMessage = '''
 {0} help 显示帮助信息
 {0} list [<limit>] 列出所有/<limit>条备份
 {0} make [<comment>] 创建新备份
-{0} back [<id>] 恢复到指定id
+{0} back [:<index>|<hash id>] 恢复到指定id
 {0} confirm <id> 确认回档
 {0} abort 取消回档
 {0} reload 重新加载配置文件
@@ -83,6 +84,10 @@ abort_callback = None
 
 backup_timer = None
 need_backup = False
+
+def debug_message(*args, **kwargs):
+  if config['debug']:
+    print(*args, **kwargs)
 
 def send_message(source: MCDR.CommandSource or None, *args, sep=' ', format_='[GBU] {msg}'):
   if source is None:
@@ -184,8 +189,9 @@ def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
     for file in config['need_backup']:
       sc = os.path.join(config['server_path'], file)
       tg = os.path.join(config['backup_path'], file)
-      if os.path.exists(tg): shutil.rmtree(tg)
-      if os.path.exists(sc): shutil.copytree(sc, tg)
+      if os.path.exists(tg): rmfile(tg)
+      if os.path.exists(sc): copyfile(sc, tg)
+    send_message(source, 'Commiting backup {}...'.format(common))
     run_git_cmd('add', '.')
     ecode, out, err = run_git_cmd('commit', '-m', common)
     if ecode != 0:
@@ -195,8 +201,8 @@ def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
       return
 
     send_message(source, 'Make backup {} SUCCESS'.format(common))
-    flushTimer0()
     what_is_doing = None
+    flushTimer0()
 
     if config['push_interval'] > 0 and \
       config['last_push_time'] + config['push_interval'] < time.time() and \
@@ -268,14 +274,14 @@ def command_back_backup(source: MCDR.CommandSource, bid):
     server.logger.info('[GBU] Backup now')
     ecode, out, err = run_git_cmd('reset', '--hard', bkid)
     if ecode == 0:
-      if os.path.exists(config['cache_path']): shutil.rmtree(config['cache_path'])
-      shutil.copytree(config['server_path'], config['cache_path'])
+      if os.path.exists(config['cache_path']): rmfile(config['cache_path'])
+      copyfile(config['server_path'], config['cache_path'])
       for file in config['need_backup']:
         if file == '.gitignore': continue
         tg = os.path.join(config['server_path'], file)
         sc = os.path.join(config['backup_path'], file)
-        if os.path.exists(tg): shutil.rmtree(tg)
-        if os.path.exists(sc): shutil.copytree(sc, tg)
+        if os.path.exists(tg): rmfile(tg)
+        if os.path.exists(sc): copyfile(sc, tg)
       server.logger.info('[GBU] Backup to {date}({common}) SUCCESS'.format(date=date, common=common))
     else:
       server.logger.info('[GBU] Backup to {date}({common}) ERROR:\n{err}'.format(date=date, common=common, err=err))
@@ -355,6 +361,7 @@ def on_unload(server: MCDR.ServerInterface):
   server.logger.info('GitBackUp is on unload')
   need_backup = False
   flushTimer()
+  save_config(server)
 
   global SERVER_OBJ
   SERVER_OBJ = None
@@ -364,8 +371,7 @@ def on_remove(server: MCDR.ServerInterface):
   server.logger.info('GitBackUp is on disable')
   need_backup = False
   flushTimer()
-  with open(CONFIG_FILE, 'w') as file:
-    json.dump(config, file, indent=4)
+  save_config(server)
 
   global SERVER_OBJ
   SERVER_OBJ = None
@@ -403,11 +409,14 @@ def setup_git(server: MCDR.ServerInterface):
     # init git
     server.logger.info('git is initing')
     _run_git_cmd_hp('init')
-    _run_git_cmd_hp('checkout', '-b', config['git_config']['branch_name'])
     _run_git_cmd_hp('remote', 'add', config['git_config']['remote_name'], config['git_config']['remote'])
+    _run_git_cmd_hp('checkout', '-b', config['git_config']['branch_name'])
     _run_git_cmd_hp('config', 'credential.helper', 'store')
     if config['git_config']['remote'] is not None:
-      _run_git_cmd_hp('pull', '--set-upstream', config['git_config']['remote_name'], config['git_config']['branch_name'])
+      try:
+        _run_git_cmd_hp('pull', '--set-upstream', config['git_config']['remote_name'], config['git_config']['branch_name'])
+      except:
+        pass
 
   ecode, out, _ = run_git_cmd('remote', 'get-url', config['git_config']['remote_name'])
   server.logger.info(out)
@@ -492,16 +501,33 @@ def get_format_time():
   return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
 
 def run_sh_cmd(source: str):
+  debug_message('Running command "{}"'.format(source))
   proc = subprocess.Popen(
     source, shell=True,
     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     bufsize=-1)
   exitid = proc.wait()
-  stdout = io.TextIOWrapper(proc.stdout, encoding='utf-8').read()
-  stderr = io.TextIOWrapper(proc.stderr, encoding='utf-8').read()
+  stdout = io.TextIOWrapper(proc.stdout).read()
+  stderr = io.TextIOWrapper(proc.stderr).read()
   return 0 if exitid is None else exitid, stdout, stderr
 
 def run_git_cmd(child: str, *args):
   command = '{git} -C {path} {child} {args}'.format(
     git=config['git_path'], path=config['backup_path'], child=child, args=' '.join(args))
   return run_sh_cmd(command)
+
+def rmfile(tg):
+  debug_message('Removing "{}"'.format(tg))
+  if os.path.isdir(tg):
+    shutil.rmtree(tg)
+  elif os.path.isfile(tg):
+    os.remove(tg)
+
+def copyfile(src, drt):
+  debug_message('Copying "{0}" to "{1}"'.format(src, drt))
+  if os.path.basename(src) in config['ignores']:
+    return
+  if os.path.isdir(src):
+    shutil.copytree(src, drt, ignore=shutil.ignore_patterns(*config['ignores']))
+  elif os.path.isfile(src):
+    shutil.copy(src, drt)
