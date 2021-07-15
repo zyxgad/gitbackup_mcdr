@@ -11,7 +11,7 @@ import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'git_backup',
-  'version': '1.1.0',
+  'version': '1.1.1',
   'name': 'GitBackUp',
   'description': 'Minecraft Git Backup Plugin',
   'author': 'zyxgad',
@@ -189,16 +189,16 @@ def command_list_backup(source: MCDR.CommandSource, limit: int or None = None):
   bkid, date, common = parse_backup_info(lines[0])
   latest = (format_command('{0} back {1}'.format(Prefix, bkid), '{}\n'.format(bkid[:16]), color=MCDR.RColor.blue).
     h(f'hash: {bkid}\n', f'date: {date}\n', f'common: {common}\n', '点击回档'))
-  msg = MCDR.RTextList('------------ git backups ------------\n', latest)
+  msg = MCDR.RTextList('------------ git backups ------------\n', MCDR.RText('{}: '.format(1), color=MCDR.RColor.blue, styles=MCDR.RStyle.underlined), latest)
   i = 1
   while i < len(lines):
     bkid, date, common = parse_backup_info(lines[i])
-    msg = MCDR.RTextList(msg, MCDR.RText('{}: '.format(i - 1), color=MCDR.RColor.blue, styles=MCDR.RStyle.underlined),
-      format_command('{0} back {1}'.format(Prefix, bkid), '{}\n'.format(bkid[:16]), color=MCDR.RColor.blue).
+    msg = MCDR.RTextList(msg,
+      format_command('{0} back {1}'.format(Prefix, bkid), '{0}: {1}: {2}\n'.format(i + 1, bkid[:16], common), color=MCDR.RColor.blue).
       h(f'hash: {bkid}\n', f'date: {date}\n', f'common: {common}\n', '点击回档'))
     i += 1
   msg = MCDR.RTextList(msg,
-    '共{}条备份, 最近一次备份为:\n'.format(i), latest,
+    '共{}条备份, 最近一次备份为:\n  '.format(i), latest,
     '------------ git backups ------------')
   send_message(source, msg, prefix='')
 
@@ -524,7 +524,7 @@ def load_config(server: MCDR.ServerInterface, source: MCDR.CommandSource or None
     with open(CONFIG_FILE) as file:
       js = json.load(file)
     for key in default_config.keys():
-      config[key] = js[key]
+      config[key] = (js if keys in js else default_config)[key]
     server.logger.info('Config file loaded')
     send_message(source, '配置文件加载成功')
   except:
