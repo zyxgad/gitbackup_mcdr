@@ -11,7 +11,7 @@ import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'git_backup',
-  'version': '1.0.4',
+  'version': '1.1.0',
   'name': 'GitBackUp',
   'description': 'Minecraft Git Backup Plugin',
   'author': 'zyxgad',
@@ -92,11 +92,11 @@ def debug_message(*args, **kwargs):
   if config['debug']:
     print(*args, **kwargs)
 
-def send_message(source: MCDR.CommandSource or None, *args, sep=' ', format_='[GBU] {msg}'):
+def send_message(source: MCDR.CommandSource or None, *args, sep=' ', prefix='[GBU] '):
   if source is None:
     return
-  msg = format_.format(msg=sep.join(args))
-  (source.get_server().say if source.is_player else source.reply)(msg)
+  (source.get_server().say if source.is_player else source.reply)\
+    (MCDR.RTextList(prefix, args[0], *([MCDR.RTextList(sep, a) for a in args][1:])))
 
 def parse_backup_info(line: str):
   bkid, cmn = line.split(' ', 1)
@@ -150,28 +150,34 @@ def flushTimer0():
   global need_backup
   config['last_backup_time'] = time.time()
   if need_backup:
-    SERVER_OBJ.broadcast('[GBU] Flush backup timer\n[GBU] the next backup will make after {:.1f} sec'.format(float(config['backup_interval'])))
+    SERVER_OBJ.broadcast(
+      '[GBU] Flush backup timer\n[GBU] the next backup will make after {:.1f} sec'.format(float(config['backup_interval'])))
     flushTimer()
+
+######## something packer ########
+
+def format_command(command: str, text=None, color=MCDR.RColor.yellow, styles=MCDR.RStyle.underlined):
+  if text is None: text = command
+  return MCDR.RText(text, color=color, styles=styles).c(MCDR.RAction.run_command, command)
 
 ######## COMMANDS ########
 
 def command_help(source: MCDR.CommandSource):
-  send_message(source, HelpMessage, format_="{msg}")
+  send_message(source, HelpMessage, prefix='')
 
 def command_status(source: MCDR.CommandSource):
   tmnow = time.time()
-  msg = '当前时间: {0}\n\
-最近一次备份:\n\
- hash: {1[0]}\n\
- date: {1[1]}\n\
- comment: {1[2]}\n\
-下次备份将在{2:.1f}秒后进行\n\
-下次推送将在{3:.1f}秒后进行\n'.format(
-    get_format_time(tmnow),
-    get_backup_info(1),
+  bkid, date, common = get_backup_info(1)
+  msg = MCDR.RTextList('------------ git backups ------------\n', '当前时间: {0}\n\
+最近一次备份:\n  '.format(get_format_time(tmnow)),
+    MCDR.RTextList(format_command('{0} back {1}'.format(Prefix, bkid), bkid + '\n', color=MCDR.RColor.blue).
+      h(f'hash: {bkid}\n', f'date: {date}\n', f'common: {common}\n', '点击回档')),
+'下次备份将在{0:.1f}秒后进行\n\
+下次推送将在{1:.1f}秒后进行\n------------ git backups ------------'.format(
     float(max(config['backup_interval'] - (tmnow - config['last_backup_time']), 0)),
     float(max(config['push_interval'] - (tmnow - config['last_push_time']), 0)))
-  send_message(source, msg, format_="------------ git backups ------------\n{msg}------------ git backups ------------")
+  )
+  send_message(source, msg, prefix='')
 
 @MCDR.new_thread('GBU')
 def command_list_backup(source: MCDR.CommandSource, limit: int or None = None):
@@ -179,14 +185,22 @@ def command_list_backup(source: MCDR.CommandSource, limit: int or None = None):
   if ecode != 0:
     send_message(source, err)
     return
-  msg = ''
   lines = out.splitlines()
-  i = 0
+  bkid, date, common = parse_backup_info(lines[0])
+  latest = (format_command('{0} back {1}'.format(Prefix, bkid), '{}\n'.format(bkid[:16]), color=MCDR.RColor.blue).
+    h(f'hash: {bkid}\n', f'date: {date}\n', f'common: {common}\n', '点击回档'))
+  msg = MCDR.RTextList('------------ git backups ------------\n', latest)
+  i = 1
   while i < len(lines):
-    msg += f'{i+1}: {lines[i]}\n'
+    bkid, date, common = parse_backup_info(lines[i])
+    msg = MCDR.RTextList(msg, MCDR.RText('{}: '.format(i - 1), color=MCDR.RColor.blue, styles=MCDR.RStyle.underlined),
+      format_command('{0} back {1}'.format(Prefix, bkid), '{}\n'.format(bkid[:16]), color=MCDR.RColor.blue).
+      h(f'hash: {bkid}\n', f'date: {date}\n', f'common: {common}\n', '点击回档'))
     i += 1
-  msg += '共{0}条备份, 最近一次备份为:\n{1}\n'.format(i, lines[0])
-  send_message(source, msg, format_="------------ git backups ------------\n{msg}------------ git backups ------------")
+  msg = MCDR.RTextList(msg,
+    '共{}条备份, 最近一次备份为:\n'.format(i), latest,
+    '------------ git backups ------------')
+  send_message(source, msg, prefix='')
 
 def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
   global what_is_doing
@@ -238,9 +252,7 @@ def command_back_backup(source: MCDR.CommandSource, bid):
     send_message(source, f'Error: is {what_is_doing} now')
     return
 
-  if isinstance(bid, str) and bid[0] == ':': bid = int(bid[1:])
-
-  bkid, date, common = get_backup_info(bid)
+  bkid, date, common = get_backup_info(int(bid[1:]) if isinstance(bid, str) and bid[0] == ':' else bid)
 
   @MCDR.new_thread('GBU')
   def call(source: MCDR.CommandSource):
@@ -264,11 +276,11 @@ def command_back_backup(source: MCDR.CommandSource, bid):
     abort_callback = call0
 
     while t > 0:
-      server.broadcast('[GBU] {t} 秒后将重启回档至{date}({common})\n[GBU] 输入{0} abort撤销回档'.format(
-        Prefix, t=t, date=date, common=common))
+      server.broadcast(MCDR.RTextList('[GBU] {t} 秒后将重启回档至{date}({common})\n[GBU] 输入`'.format(
+        Prefix, t=t, date=date, common=common), format_command('{0} abort'.format(Prefix)), '`撤销回档'))
       time.sleep(1)
       if abort[0]:
-        server.broadcast('[GBU] 回档已取消')
+        server.broadcast('[GBU] 已取消回档')
         what_is_doing = None
         return
       t -= 1
@@ -278,7 +290,7 @@ def command_back_backup(source: MCDR.CommandSource, bid):
     server.wait_for_start()
 
     if abort[0]:
-      server.logger.info('[GBU] 回档已取消')
+      server.logger.info('[GBU] 已取消回档')
       server.start()
       what_is_doing = None
       return
@@ -306,9 +318,18 @@ def command_back_backup(source: MCDR.CommandSource, bid):
 
     what_is_doing = None
 
-  send_message(source, '输入 `{0} confirm` 确认回档至{date}({common})'.format(Prefix, date=date, common=common))
-  global confirm_callback
+  def call2(source: MCDR.CommandSource):
+    global confirm_callback
+    source.get_server().broadcast('[GBU] 已取消准备回档')
+    if confirm_callback is call:
+      confirm_callback = None
+
+  send_message(source, MCDR.RTextList('输入`', format_command('{0} confirm'.format(Prefix)),
+    '`确认回档至{date}({common}) `'.format(Prefix, date=date, common=common),
+    format_command('{0} abort'.format(Prefix)), '`撤销回档'))
+  global confirm_callback, abort_callback
   confirm_callback = call
+  abort_callback = call2
 
 def command_confirm(source: MCDR.CommandSource):
   global confirm_callback
@@ -531,8 +552,16 @@ def run_sh_cmd(source: str):
     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     bufsize=-1)
   exitid = proc.wait()
-  stdout = io.TextIOWrapper(proc.stdout).read()
-  stderr = io.TextIOWrapper(proc.stderr).read()
+  stdout0 = proc.stdout.read()
+  stderr0 = proc.stderr.read()
+  try:
+    stdout = stdout0.decode('utf-8')
+  except UnicodeDecodeError:
+    stdout = stdout0.decode('gbk')
+  try:
+    stderr = stderr0.decode('utf-8')
+  except UnicodeDecodeError:
+    stderr = stderr0.decode('gbk')
   return 0 if exitid is None else exitid, stdout, stderr
 
 def run_git_cmd(child: str, *args):
