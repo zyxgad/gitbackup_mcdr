@@ -11,7 +11,7 @@ import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'git_backup',
-  'version': '1.0.3',
+  'version': '1.0.4',
   'name': 'GitBackUp',
   'description': 'Minecraft Git Backup Plugin',
   'author': 'zyxgad',
@@ -34,7 +34,7 @@ default_config = {
   'last_backup_time': 0,
   'push_interval': 60 * 60 * 24, # 1 day
   'last_push_time': 0,
-  'backup_wait_time': 30,
+  'back_wait_time': 30,
   'backup_path': './git_backup',
   'cache_path': './git_backup_cache',
   'server_path': './server',
@@ -47,7 +47,8 @@ default_config = {
   # 0:guest 1:user 2:helper 3:admin
   'minimum_permission_level': {
     'help':    0,
-    'list':    0,
+    'status':  1,
+    'list':    1,
     'make':    1,
     'back':    2,
     'confirm': 1,
@@ -64,6 +65,7 @@ Prefix = '!!gbk'
 HelpMessage = '''
 ------------ {1} v{2} ------------
 {0} help 显示帮助信息
+{0} status 显示备份状态
 {0} list [<limit>] 列出所有/<limit>条备份
 {0} make [<comment>] 创建新备份
 {0} back [:<index>|<hash id>] 恢复到指定id
@@ -96,32 +98,30 @@ def send_message(source: MCDR.CommandSource or None, *args, sep=' ', format_='[G
   msg = format_.format(msg=sep.join(args))
   (source.get_server().say if source.is_player else source.reply)(msg)
 
+def parse_backup_info(line: str):
+  bkid, cmn = line.split(' ', 1)
+  a = cmn.split('=', 1)
+  date, common = a if len(a) == 2 else (a[0], '')
+  return bkid, date, common
+
 def get_backup_info(bid: str or int):
   ecode, out, err = run_git_cmd('log', '--pretty=oneline', '--no-decorate', '-{}'.format(bid) if isinstance(bid, int) else '')
   if ecode != 0:
-    send_message(source, err)
-    return None, None, None
+    raise RuntimeError('Get log error: ({0}){1}'.format(ecode, err))
   lines = out.splitlines()
 
   if isinstance(bid, int):
     if len(lines) < bid:
-      send_message(source, '未找到备份 {}'.format(bid))
-      return None, None, None
-    bkid, cmn = lines[bid - 1].split(' ', 1)
-    date, common = cmn.split('=', 1)
-    return bkid, date, common
+      raise ValueError('Index({}) is out of range'.format(bid))
+    return parse_backup_info(lines[bid - 1])
   if isinstance(bid, str):
     i = 0
     while i < len(lines):
       l = lines[i]
       if l.startswith(bid):
-        bkid, cmn = l.split(' ', 1)
-        date, common = cmn.split('=', 1)
-        return bkid, date, common
+        return parse_backup_info(l)
       i += 1
-    send_message(source, '未找到备份 "{}"'.format(bid))
-    return None, None, None
-  
+    raise ValueError('Can not found commit by hash "{}"'.format(bid))
   raise TypeError('bid must be "int" or "str"')
 
 def timerCall():
@@ -139,8 +139,7 @@ def flushTimer():
     backup_timer = None
   global need_backup
   if need_backup:
-    tnow = time.time()
-    bkinterval = config['backup_interval'] - (tnow - config['last_backup_time'])
+    bkinterval = config['backup_interval'] - (time.time() - config['last_backup_time'])
     if bkinterval <= 0:
       timerCall()
       return
@@ -159,6 +158,21 @@ def flushTimer0():
 def command_help(source: MCDR.CommandSource):
   send_message(source, HelpMessage, format_="{msg}")
 
+def command_status(source: MCDR.CommandSource):
+  tmnow = time.time()
+  msg = '当前时间: {0}\n\
+最近一次备份:\n\
+ hash: {1[0]}\n\
+ date: {1[1]}\n\
+ comment: {1[2]}\n\
+下次备份将在{2:.1f}秒后进行\n\
+下次推送将在{3:.1f}秒后进行\n'.format(
+    get_format_time(tmnow),
+    get_backup_info(1),
+    float(max(config['backup_interval'] - (tmnow - config['last_backup_time']), 0)),
+    float(max(config['push_interval'] - (tmnow - config['last_push_time']), 0)))
+  send_message(source, msg, format_="------------ git backups ------------\n{msg}------------ git backups ------------")
+
 @MCDR.new_thread('GBU')
 def command_list_backup(source: MCDR.CommandSource, limit: int or None = None):
   ecode, out, err = run_git_cmd('log', '--pretty=oneline', '--no-decorate', '' if limit is None else '-{}'.format(limit))
@@ -171,6 +185,7 @@ def command_list_backup(source: MCDR.CommandSource, limit: int or None = None):
   while i < len(lines):
     msg += f'{i+1}: {lines[i]}\n'
     i += 1
+  msg += '共{0}条备份, 最近一次备份为:\n{1}\n'.format(i, lines[0])
   send_message(source, msg, format_="------------ git backups ------------\n{msg}------------ git backups ------------")
 
 def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
@@ -238,7 +253,7 @@ def command_back_backup(source: MCDR.CommandSource, bid):
     server = source.get_server()
 
     abort = [False]
-    t = config['backup_wait_time']
+    t = config['back_wait_time']
     def call0(source: MCDR.CommandSource):
       if t == -1:
         send_message(source, '已经开始回档, 无法取消')
@@ -295,6 +310,22 @@ def command_back_backup(source: MCDR.CommandSource, bid):
   global confirm_callback
   confirm_callback = call
 
+def command_confirm(source: MCDR.CommandSource):
+  global confirm_callback
+  if confirm_callback is None:
+    send_message(source, '没有正在进行的事件')
+  else:
+    confirm_callback(source)
+    confirm_callback = None
+
+def command_abort(source: MCDR.CommandSource):
+  global abort_callback
+  if abort_callback is None:
+    send_message(source, '没有正在进行的事件')
+  else:
+    abort_callback(source)
+    abort_callback = None
+
 @MCDR.new_thread('GBU')
 def command_push_backup(source: MCDR.CommandSource):
   _command_push_backup(source)
@@ -320,21 +351,8 @@ def _command_push_backup(source: MCDR.CommandSource):
   send_message(source, 'Push SUCCESS:\n' + out)
   what_is_doing = None
 
-def command_confirm(source: MCDR.CommandSource):
-  global confirm_callback
-  if confirm_callback is None:
-    send_message(source, '没有正在进行的事件')
-  else:
-    confirm_callback(source)
-    confirm_callback = None
-
-def command_abort(source: MCDR.CommandSource):
-  global abort_callback
-  if abort_callback is None:
-    send_message(source, '没有正在进行的事件')
-  else:
-    abort_callback(source)
-    abort_callback = None
+def command_pull_backup(source: MCDR.CommandSource):
+  send_message(source, '功能开发中')
 
 ######## APIs ########
 
@@ -362,7 +380,6 @@ def on_unload(server: MCDR.ServerInterface):
   server.logger.info('GitBackUp is on unload')
   need_backup = False
   flushTimer()
-  save_config(server)
 
   global SERVER_OBJ
   SERVER_OBJ = None
@@ -381,6 +398,10 @@ def on_server_startup(server: MCDR.ServerInterface):
   server.logger.info('[GBU] server is startup')
   if need_backup:
     flushTimer()
+
+def on_mcdr_stop(server: MCDR.ServerInterface):
+  server.logger.info('[GBU] mcdr is stop')
+  save_config(server)
 
 def on_info(server: MCDR.ServerInterface, info: MCDR.Info):
   if not info.is_user:
@@ -455,6 +476,7 @@ def register_command(server: MCDR.ServerInterface):
     get_literal_node(Prefix).
     runs(command_help).
     then(get_literal_node('help').runs(command_help)).
+    then(get_literal_node('status').runs(command_status)).
     then(get_literal_node('list').
       runs(lambda src: command_list_backup(src, None)).
       then(MCDR.Integer('limit').runs(lambda src, ctx: command_list_backup(src, ctx['limit'])))
@@ -470,7 +492,8 @@ def register_command(server: MCDR.ServerInterface):
     then(get_literal_node('abort').runs(command_abort)).
     then(get_literal_node('reload').runs(lambda src: load_config(server, src))).
     then(get_literal_node('save').runs(lambda src: save_config(server, src))).
-    then(get_literal_node('push').runs(lambda src: command_push_backup(src)))
+    then(get_literal_node('push').runs(lambda src: command_push_backup(src))).
+    then(get_literal_node('pull').runs(lambda src: command_pull_backup(src)))
   )
 
 def load_config(server: MCDR.ServerInterface, source: MCDR.CommandSource or None = None):
@@ -498,8 +521,8 @@ def save_config(server: MCDR.ServerInterface, source: MCDR.CommandSource or None
 
 ################## UTILS ##################
 
-def get_format_time():
-  return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+def get_format_time(time_=None):
+  return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time_ if time_ is not None else time.time()))
 
 def run_sh_cmd(source: str):
   debug_message('Running command "{}"'.format(source))
