@@ -10,6 +10,12 @@
 - 支持定时备份与推送
 - ~~白嫖github专用~~
 
+## 优势
+
+与其他直接copy world文件夹的插件不同, 本插件使用*git*进行备份管理, 具有以下优势
+1. 每次只会保存世界文件的**变更**记录, 而不是记录一遍**整个文件夹**
+2. 体积相对较小, 只要您不大面积改变区块文件, 本插件哪怕有再多backup也不会很大
+
 ## 配置
 ### 提前准备
 1. ssh-client
@@ -18,10 +24,13 @@
 4. 服务器的git账号
 
 ### 安装
-将本插件放入**MCDR**目录下的`plugins`文件夹下即可
+1. 将本插件放入**MCDR**目录下的`plugins`文件夹下
+2. 运行一遍插件, 以获取`config/GitBackUp.json`配置文件
+3. 根据下文调整配置文件
+4. 使用`!!MCDR plugin reloadall`重新加载本插件
 
-### 配置文件
-```json
+### 配置文件 (config/GitBackUp.json)
+```javascript
 {
     "debug": false, // 是否开启调试信息
     "git_path": "git", // git安装路径
@@ -77,3 +86,4 @@
 - `!!gbk pull` 拉取远程服务器的备份信息
 
 # English
+None
