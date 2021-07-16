@@ -455,6 +455,7 @@ def setup_git(server: MCDR.ServerInterface):
     _run_git_cmd_hp('remote', 'add', config['git_config']['remote_name'], config['git_config']['remote'])
     _run_git_cmd_hp('checkout', '-b', config['git_config']['branch_name'])
     _run_git_cmd_hp('config', 'credential.helper', 'store')
+    #git config --global core.autocrlf false
     if config['git_config']['remote'] is not None:
       try:
         _run_git_cmd_hp('pull', '--set-upstream', config['git_config']['remote_name'], config['git_config']['branch_name'])
@@ -524,7 +525,7 @@ def load_config(server: MCDR.ServerInterface, source: MCDR.CommandSource or None
     with open(CONFIG_FILE) as file:
       js = json.load(file)
     for key in default_config.keys():
-      config[key] = (js if keys in js else default_config)[key]
+      config[key] = (js if key in js else default_config)[key]
     server.logger.info('Config file loaded')
     send_message(source, '配置文件加载成功')
   except:
