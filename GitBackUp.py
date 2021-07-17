@@ -11,7 +11,7 @@ import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'git_backup',
-  'version': '1.1.1',
+  'version': '1.1.2',
   'name': 'GitBackUp',
   'description': 'Minecraft Git Backup Plugin',
   'author': 'zyxgad',
@@ -160,6 +160,11 @@ def format_command(command: str, text=None, color=MCDR.RColor.yellow, styles=MCD
   if text is None: text = command
   return MCDR.RText(text, color=color, styles=styles).c(MCDR.RAction.run_command, command)
 
+def format_git_list(source: MCDR.CommandSource, string, bkid, date, common):
+  return (format_command('{0} back {1}'.format(Prefix, bkid), string, color=MCDR.RColor.blue).
+    h(f'hash: {bkid}\n', f'date: {date}\n', f'common: {common}\n', '点击回档') if source.is_player else
+    MCDR.RText(string + f'  hash: {bkid}\n  date: {date}\n  common: {common}\n', color=MCDR.RColor.blue))
+
 ######## COMMANDS ########
 
 def command_help(source: MCDR.CommandSource):
@@ -168,10 +173,8 @@ def command_help(source: MCDR.CommandSource):
 def command_status(source: MCDR.CommandSource):
   tmnow = time.time()
   bkid, date, common = get_backup_info(1)
-  msg = MCDR.RTextList('------------ git backups ------------\n', '当前时间: {0}\n\
-最近一次备份:\n  '.format(get_format_time(tmnow)),
-    MCDR.RTextList(format_command('{0} back {1}'.format(Prefix, bkid), bkid + '\n', color=MCDR.RColor.blue).
-      h(f'hash: {bkid}\n', f'date: {date}\n', f'common: {common}\n', '点击回档')),
+  msg = MCDR.RTextList('------------ git backups ------------\n',
+'当前时间: {}\n'.format(get_format_time(tmnow)), format_git_list(source, '最近一次备份: {}\n'.format(bkid[:16]), bkid, date, common),
 '下次备份将在{0:.1f}秒后进行\n\
 下次推送将在{1:.1f}秒后进行\n------------ git backups ------------'.format(
     float(max(config['backup_interval'] - (tmnow - config['last_backup_time']), 0)),
@@ -187,18 +190,15 @@ def command_list_backup(source: MCDR.CommandSource, limit: int or None = None):
     return
   lines = out.splitlines()
   bkid, date, common = parse_backup_info(lines[0])
-  latest = (format_command('{0} back {1}'.format(Prefix, bkid), '{}\n'.format(bkid[:16]), color=MCDR.RColor.blue).
-    h(f'hash: {bkid}\n', f'date: {date}\n', f'common: {common}\n', '点击回档'))
-  msg = MCDR.RTextList('------------ git backups ------------\n', MCDR.RText('{}: '.format(1), color=MCDR.RColor.blue, styles=MCDR.RStyle.underlined), latest)
-  i = 1
+  latest = format_git_list(source, '{}\n'.format(bkid[:16]), bkid, date, common)
+  msg = MCDR.RText('------------ git backups ------------\n')
+  i = 0
   while i < len(lines):
     bkid, date, common = parse_backup_info(lines[i])
-    msg = MCDR.RTextList(msg,
-      format_command('{0} back {1}'.format(Prefix, bkid), '{0}: {1}: {2}\n'.format(i + 1, bkid[:16], common), color=MCDR.RColor.blue).
-      h(f'hash: {bkid}\n', f'date: {date}\n', f'common: {common}\n', '点击回档'))
+    msg = MCDR.RTextList(msg, format_git_list(source, '{0}: {1}: {2}\n'.format(i + 1, bkid[:16], common), bkid, date, common))
     i += 1
   msg = MCDR.RTextList(msg,
-    '共{}条备份, 最近一次备份为:\n  '.format(i), latest,
+    '共{}条备份, 最近一次备份为: '.format(i), latest,
     '------------ git backups ------------')
   send_message(source, msg, prefix='')
 

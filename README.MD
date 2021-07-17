@@ -75,7 +75,7 @@
 
 - `!!gbk help` 显示帮助信息
 - `!!gbk status` 显示备份状态
-- `!!gbk list [<limit>]` 列出所有/<limit>条备份
+- `!!gbk list [<limit>]` 列出`所有/<limit>`条备份
 - `!!gbk make [<comment>]` 创建新备份
 - `!!gbk back [:<index>|<hash id>]` 恢复到指定id
 - `!!gbk confirm <id>` 确认回档
