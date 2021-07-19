@@ -11,7 +11,7 @@ import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'git_backup',
-  'version': '1.1.2',
+  'version': '1.1.3',
   'name': 'GitBackUp',
   'description': 'Minecraft Git Backup Plugin',
   'author': 'zyxgad',
@@ -25,6 +25,7 @@ default_config = {
   'debug': False,
   'git_path': 'git',
   'git_config': {
+    'use_remote': False,
     'remote': 'https://github.com/user/repo.git',
     'remote_name': 'backup',
     'branch_name': 'backup',
@@ -234,9 +235,8 @@ def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
     what_is_doing = None
     flushTimer0()
 
-    if config['push_interval'] > 0 and \
-      config['last_push_time'] + config['push_interval'] < time.time() and \
-      config['git_config']['remote'] is not None:
+    if config['git_config']['use_remote'] and config['push_interval'] > 0 and \
+      config['last_push_time'] + config['push_interval'] < time.time():
       send_message(source, 'pushing now...')
       _command_push_backup(source)
 
@@ -352,8 +352,8 @@ def command_push_backup(source: MCDR.CommandSource):
   _command_push_backup(source)
 
 def _command_push_backup(source: MCDR.CommandSource):
-  if config['git_config']['remote'] is None:
-    send_message(source, 'No remote url')
+  if config['git_config']['use_remote']:
+    send_message(source, 'Not allowed remote')
     return
   global what_is_doing
   if what_is_doing is not None:
@@ -452,27 +452,27 @@ def setup_git(server: MCDR.ServerInterface):
     # init git
     server.logger.info('git is initing')
     _run_git_cmd_hp('init')
-    _run_git_cmd_hp('remote', 'add', config['git_config']['remote_name'], config['git_config']['remote'])
     _run_git_cmd_hp('checkout', '-b', config['git_config']['branch_name'])
     _run_git_cmd_hp('config', 'credential.helper', 'store')
     #git config --global core.autocrlf false
-    if config['git_config']['remote'] is not None:
+    if config['git_config']['use_remote']:
+      _run_git_cmd_hp('remote', 'add', config['git_config']['remote_name'], config['git_config']['remote'])
       try:
         _run_git_cmd_hp('pull', '--set-upstream', config['git_config']['remote_name'], config['git_config']['branch_name'])
       except:
         pass
 
-  ecode, out, _ = run_git_cmd('remote', 'get-url', config['git_config']['remote_name'])
-  server.logger.info(out)
-  if ecode != 0 or out.strip() != config['git_config']['remote']:
-    server.logger.info('new url: ' + config['git_config']['remote'])
-    _run_git_cmd_hp('remote', 'set-url', config['git_config']['remote_name'], config['git_config']['remote'])
+  if config['git_config']['use_remote']:
+    ecode, out, _ = run_git_cmd('remote', 'get-url', config['git_config']['remote_name'])
+    if ecode != 0 or out.strip() != config['git_config']['remote']:
+      server.logger.info('new url: ' + config['git_config']['remote'])
+      _run_git_cmd_hp('remote', 'set-url', config['git_config']['remote_name'], config['git_config']['remote'])
 
   with open(os.path.join(config['backup_path'], '.gitignore'), 'w') as fd:
     fd.write('#Make by GitBackUp at {}\n'.format(get_format_time()))
     fd.writelines(config['ignores'])
 
-  if config['git_config']['remote'] is not None:
+  if config['git_config']['use_remote']:
     server.logger.info('git remote: {}'.format(config['git_config']['remote']))
   if not config['git_config']['is_setup']:
     _run_git_cmd_hp('add', '--all')
