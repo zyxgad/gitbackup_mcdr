@@ -11,7 +11,7 @@ import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'git_backup',
-  'version': '1.1.3',
+  'version': '1.1.4',
   'name': 'GitBackUp',
   'description': 'Minecraft Git Backup Plugin',
   'author': 'zyxgad',
@@ -106,9 +106,9 @@ def parse_backup_info(line: str):
   return bkid, date, common
 
 def get_backup_info(bid: str or int):
-  ecode, out, err = run_git_cmd('log', '--pretty=oneline', '--no-decorate', '-{}'.format(bid) if isinstance(bid, int) else '')
+  ecode, out = run_git_cmd('log', '--pretty=oneline', '--no-decorate', '-{}'.format(bid) if isinstance(bid, int) else '')
   if ecode != 0:
-    raise RuntimeError('Get log error: ({0}){1}'.format(ecode, err))
+    raise RuntimeError('Get log error: ({0}){1}'.format(ecode, out))
   lines = out.splitlines()
 
   if isinstance(bid, int):
@@ -185,17 +185,20 @@ def command_status(source: MCDR.CommandSource):
 
 @MCDR.new_thread('GBU')
 def command_list_backup(source: MCDR.CommandSource, limit: int or None = None):
-  ecode, out, err = run_git_cmd('log', '--pretty=oneline', '--no-decorate', '' if limit is None else '-{}'.format(limit))
+  ecode, out = run_git_cmd('log', '--pretty=oneline', '--no-decorate', '' if limit is None else '-{}'.format(limit))
   if ecode != 0:
-    send_message(source, err)
+    send_message(source, out)
     return
   lines = out.splitlines()
   bkid, date, common = parse_backup_info(lines[0])
   latest = format_git_list(source, '{}\n'.format(bkid[:16]), bkid, date, common)
   msg = MCDR.RText('------------ git backups ------------\n')
+  debug_message('whiling lines', len(lines))
   i = 0
   while i < len(lines):
+    debug_message('parsing line:', i, ':', lines[i])
     bkid, date, common = parse_backup_info(lines[i])
+    debug_message('RTextList appending')
     msg = MCDR.RTextList(msg, format_git_list(source, '{0}: {1}: {2}\n'.format(i + 1, bkid[:16], common), bkid, date, common))
     i += 1
   msg = MCDR.RTextList(msg,
@@ -224,15 +227,15 @@ def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
       if os.path.exists(sc): copyfile(sc, tg)
     send_message(source, 'Commiting backup {}...'.format(common))
     run_git_cmd('add', '--all')
-    ecode, out, err = run_git_cmd('commit', '-m', common)
+    ecode, out = run_git_cmd('commit', '-m', common)
     if ecode != 0:
-      send_message(source, 'Make backup {0} ERROR:\n{1}'.format(common, err))
       what_is_doing = None
+      send_message(source, 'Make backup {0} ERROR:\n{1}'.format(common, out))
       flushTimer0()
       return
 
-    send_message(source, 'Make backup {} SUCCESS'.format(common))
     what_is_doing = None
+    send_message(source, 'Make backup {} SUCCESS'.format(common))
     flushTimer0()
 
     if config['git_config']['use_remote'] and config['push_interval'] > 0 and \
@@ -300,7 +303,7 @@ def command_back_backup(source: MCDR.CommandSource, bid):
       abort_callback = None
 
     server.logger.info('[GBU] Backup now')
-    ecode, out, err = run_git_cmd('reset', '--hard', bkid)
+    ecode, out = run_git_cmd('reset', '--hard', bkid)
     if ecode == 0:
       if os.path.exists(config['cache_path']): rmfile(config['cache_path'])
       copyfile(config['server_path'], config['cache_path'])
@@ -312,7 +315,7 @@ def command_back_backup(source: MCDR.CommandSource, bid):
         if os.path.exists(sc): copyfile(sc, tg)
       server.logger.info('[GBU] Backup to {date}({common}) SUCCESS'.format(date=date, common=common))
     else:
-      server.logger.info('[GBU] Backup to {date}({common}) ERROR:\n{err}'.format(date=date, common=common, err=err))
+      server.logger.info('[GBU] Backup to {date}({common}) ERROR:\n{err}'.format(date=date, common=common, err=out))
     server.logger.info('[GBU] Starting server')
     server.start()
 
@@ -352,7 +355,7 @@ def command_push_backup(source: MCDR.CommandSource):
   _command_push_backup(source)
 
 def _command_push_backup(source: MCDR.CommandSource):
-  if config['git_config']['use_remote']:
+  if not config['git_config']['use_remote']:
     send_message(source, 'Not allowed remote')
     return
   global what_is_doing
@@ -362,9 +365,9 @@ def _command_push_backup(source: MCDR.CommandSource):
   what_is_doing = 'pushing'
 
   send_message(source, 'Pushing backups')
-  ecode, out, err = run_git_cmd('push', '-f', '-q')
+  ecode, out = run_git_cmd('push', '-f', '-q')
   if ecode != 0:
-    send_message(source, 'Push error:\n' + err)
+    send_message(source, 'Push error:\n' + out)
     what_is_doing = None
     return
 
@@ -432,10 +435,10 @@ def on_info(server: MCDR.ServerInterface, info: MCDR.Info):
         game_saved_callback()
         game_saved_callback = None
 
-
+@new_thread('GBU')
 def setup_git(server: MCDR.ServerInterface):
   # check git
-  ecode, out, _ = run_sh_cmd('{git} --version'.format(git=config['git_path']))
+  ecode, out = run_sh_cmd('{git} --version'.format(git=config['git_path']))
   if ecode != 0:
     raise RuntimeError('Can not found git at "{}"'.format(config['git_path']))
   server.logger.info(out)
@@ -443,10 +446,10 @@ def setup_git(server: MCDR.ServerInterface):
   if not os.path.isdir(config['backup_path']): os.makedirs(config['backup_path'])
 
   def _run_git_cmd_hp(child, *args):
-    ecode, out, err = run_git_cmd(child, *args)
+    ecode, out = run_git_cmd(child, *args)
     server.logger.info(out)
     if ecode != 0:
-      raise RuntimeError('Init git error({0}): {1}'.format(ecode, err))
+      raise RuntimeError('Init git error({0}): {1}'.format(ecode, out))
   if not os.path.isdir(os.path.join(config['backup_path'], '.git')):
     config['git_config']['is_setup'] = False
     # init git
@@ -463,7 +466,7 @@ def setup_git(server: MCDR.ServerInterface):
         pass
 
   if config['git_config']['use_remote']:
-    ecode, out, _ = run_git_cmd('remote', 'get-url', config['git_config']['remote_name'])
+    ecode, out = run_git_cmd('remote', 'get-url', config['git_config']['remote_name'])
     if ecode != 0 or out.strip() != config['git_config']['remote']:
       server.logger.info('new url: ' + config['git_config']['remote'])
       _run_git_cmd_hp('remote', 'set-url', config['git_config']['remote_name'], config['git_config']['remote'])
@@ -477,7 +480,7 @@ def setup_git(server: MCDR.ServerInterface):
   if not config['git_config']['is_setup']:
     _run_git_cmd_hp('add', '--all')
     _run_git_cmd_hp('commit', '-m', '"{}=Setup commit"'.format(get_format_time()))
-    if config['git_config']['remote'] is not None:
+    if config['git_config']['use_remote']:
       proc = subprocess.Popen(
         '{git} -C {path} push -u {remote_name} {branch}'.format(
           git=config['git_path'], path=config['backup_path'],
@@ -550,23 +553,39 @@ def run_sh_cmd(source: str):
   debug_message('Running command "{}"'.format(source))
   proc = subprocess.Popen(
     source, shell=True,
-    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=sys.stdin,
     bufsize=-1)
+  stdout0 = [b'', False]
+  @MCDR.new_thread("GBU-Popen-reader")
+  def reader():
+    try:
+      debug_message('reading stdout...')
+      while True:
+        buf = proc.stdout.read()
+        debug_message('read:', buf)
+        if len(buf) == 0:
+          break
+        stdout0[0] += buf
+      debug_message('end read')
+    finally:
+      stdout0[1] = True
+  reader()
+  debug_message('waiting command...')
   exitid = proc.wait()
-  stdout0 = proc.stdout.read()
-  stderr0 = proc.stderr.read()
-  try:
-    stdout = stdout0.decode('utf-8')
-  except UnicodeDecodeError:
-    stdout = stdout0.decode('gbk')
-  try:
-    stderr = stderr0.decode('utf-8')
-  except UnicodeDecodeError:
-    stderr = stderr0.decode('gbk')
-  return 0 if exitid is None else exitid, stdout, stderr
+  debug_message('decoding stdout...')
+  while not stdout0[1]:
+    time.sleep(0.05)
+  stdout = ''
+  if len(stdout0[0]) > 0:
+    try:
+      stdout = stdout0[0].decode('utf-8')
+    except UnicodeDecodeError:
+      stdout = stdout0[0].decode('gbk')
+  debug_message('returning...')
+  return 0 if exitid is None else exitid, stdout
 
 def run_git_cmd(child: str, *args):
-  command = '{git} -C {path} {child} {args}'.format(
+  command = '{git} -C {path} --no-pager {child} {args}'.format(
     git=config['git_path'], path=config['backup_path'], child=child, args=' '.join(args))
   return run_sh_cmd(command)
 
