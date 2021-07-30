@@ -1,17 +1,19 @@
 
-import io
-import subprocess
 import os
 import sys
+import io
+import subprocess
 import shutil
+import traceback
 import json
 import time
+import nbt as NBT
 from threading import Timer
 import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'git_backup',
-  'version': '1.1.4',
+  'version': '1.2.1',
   'name': 'GitBackUp',
   'description': 'Minecraft Git Backup Plugin',
   'author': 'zyxgad',
@@ -29,7 +31,9 @@ default_config = {
     'remote': 'https://github.com/user/repo.git',
     'remote_name': 'backup',
     'branch_name': 'backup',
-    'is_setup': False
+    'is_setup': False,
+    'user_email': 'you@example.com',
+    'user_name': 'Your Name'
   },
   'backup_interval': 60 * 60 * 24, # 1 day
   'last_backup_time': 0,
@@ -96,8 +100,7 @@ def debug_message(*args, **kwargs):
 def send_message(source: MCDR.CommandSource or None, *args, sep=' ', prefix='[GBU] '):
   if source is None:
     return
-  (source.get_server().say if source.is_player else source.reply)\
-    (MCDR.RTextList(prefix, args[0], *([MCDR.RTextList(sep, a) for a in args][1:])))
+  source.reply(MCDR.RTextList(prefix, args[0], *([MCDR.RTextList(sep, a) for a in args][1:])))
 
 def parse_backup_info(line: str):
   bkid, cmn = line.split(' ', 1)
@@ -220,11 +223,7 @@ def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
   def call():
     global what_is_doing
     send_message(source, 'Making backup {}...'.format(common))
-    for file in config['need_backup']:
-      sc = os.path.join(config['server_path'], file)
-      tg = os.path.join(config['backup_path'], file)
-      if os.path.exists(tg): rmfile(tg)
-      if os.path.exists(sc): copyfile(sc, tg)
+    _make_backup_files()
     send_message(source, 'Commiting backup {}...'.format(common))
     run_git_cmd('add', '--all')
     ecode, out = run_git_cmd('commit', '-m', common)
@@ -312,7 +311,7 @@ def command_back_backup(source: MCDR.CommandSource, bid):
         tg = os.path.join(config['server_path'], file)
         sc = os.path.join(config['backup_path'], file)
         if os.path.exists(tg): rmfile(tg)
-        if os.path.exists(sc): copyfile(sc, tg)
+        if os.path.exists(sc): copyfile(sc, tg, trycopyfunc=copyfilemc)
       server.logger.info('[GBU] Backup to {date}({common}) SUCCESS'.format(date=date, common=common))
     else:
       server.logger.info('[GBU] Backup to {date}({common}) ERROR:\n{err}'.format(date=date, common=common, err=out))
@@ -435,7 +434,7 @@ def on_info(server: MCDR.ServerInterface, info: MCDR.Info):
         game_saved_callback()
         game_saved_callback = None
 
-@new_thread('GBU')
+@MCDR.new_thread('GBU')
 def setup_git(server: MCDR.ServerInterface):
   # check git
   ecode, out = run_sh_cmd('{git} --version'.format(git=config['git_path']))
@@ -450,20 +449,28 @@ def setup_git(server: MCDR.ServerInterface):
     server.logger.info(out)
     if ecode != 0:
       raise RuntimeError('Init git error({0}): {1}'.format(ecode, out))
+  
   if not os.path.isdir(os.path.join(config['backup_path'], '.git')):
     config['git_config']['is_setup'] = False
     # init git
     server.logger.info('git is initing')
     _run_git_cmd_hp('init')
+    _run_git_cmd_hp('config', 'user.email', '"{}"'.format(config['git_config']['user_email']))
+    _run_git_cmd_hp('config', 'user.name', '"{}"'.format(config['git_config']['user_name']))
     _run_git_cmd_hp('checkout', '-b', config['git_config']['branch_name'])
     _run_git_cmd_hp('config', 'credential.helper', 'store')
-    #git config --global core.autocrlf false
+    _run_git_cmd_hp('config', 'core.autocrlf', 'false')
     if config['git_config']['use_remote']:
       _run_git_cmd_hp('remote', 'add', config['git_config']['remote_name'], config['git_config']['remote'])
       try:
         _run_git_cmd_hp('pull', '--set-upstream', config['git_config']['remote_name'], config['git_config']['branch_name'])
       except:
         pass
+  else:
+    _run_git_cmd_hp('config', 'user.email', '"{}"'.format(config['git_config']['user_email']))
+    _run_git_cmd_hp('config', 'user.name', '"{}"'.format(config['git_config']['user_name']))
+  server.logger.info('git email: ' + run_git_cmd('config', 'user.email')[1])
+  server.logger.info('git user: ' + run_git_cmd('config', 'user.name')[1])
 
   if config['git_config']['use_remote']:
     ecode, out = run_git_cmd('remote', 'get-url', config['git_config']['remote_name'])
@@ -543,6 +550,149 @@ def save_config(server: MCDR.ServerInterface, source: MCDR.CommandSource or None
     server.logger.info('Config file saved')
     send_message(source, '配置文件保存成功')
 
+################## NBT ##################
+
+def _nbtToJson(obj):
+  if obj is None:
+    return None
+  if isinstance(obj, NBT.nbt.TAG_Compound):
+    obj0 = dict()
+    for v in dict(obj).values():
+      obj0['{t}={v}'.format(t=v.__class__.id, v=v.name)] = _nbtToJson(v)
+    return obj0
+  if isinstance(obj, NBT.nbt.TAG_List):
+    obj0 = list()
+    for v in obj.tags:
+      obj0.append(_nbtToJson(v))
+    return (obj.tagID, obj0)
+  if isinstance(obj, (NBT.nbt.TAG_Byte_Array, NBT.nbt.TAG_Int_Array, NBT.nbt.TAG_Long_Array)):
+    return list(obj.value)
+  if isinstance(obj, NBT.nbt._TAG_Numeric):
+    return obj.value
+  if isinstance(obj, NBT.nbt._TAG_End):
+    return 0
+  return obj.value
+
+def nbtToJson(obj):
+  return json.dumps(_nbtToJson(obj), indent=0, separators=(',', ':'))
+
+def _jsonToNbt(value, name=None):
+  type_ = None
+  if name is not None:
+    t_n = name.split('=', 1)
+    type_, name = t_n if len(t_n) == 2 else (None, name)
+    type_ = int(type_)
+  # print(value)
+  if type_ is None:
+    if isinstance(value, dict):
+      type_ = NBT.nbt.TAG_COMPOUND
+    elif isinstance(value, list) and len(value) == 2 and isinstance(value[1], list):
+      type_ = NBT.nbt.TAG_LIST
+    if type_ is None:
+      raise RuntimeError('type is None')
+  value0 = NBT.nbt.TAGLIST[type_](name=name)
+  if type_ == NBT.nbt.TAG_COMPOUND:
+    for k, v in value.items():
+      nbt_ = _jsonToNbt(v, k)
+      if nbt_ is not None: value0.tags.append(nbt_)
+  elif type_ == NBT.nbt.TAG_LIST:
+    value0.tagID, value = value
+    for v in value:
+      nbt_ = _jsonToNbt(v, name='{}='.format(value0.tagID))
+      if nbt_ is not None: value0.tags.append(nbt_)
+  elif type_ == NBT.nbt.TAG_BYTE_ARRAY:
+    value0.value = bytearray(value)
+  elif type_ == NBT.nbt.TAG_INT_ARRAY:
+    value0.value = list(value)
+  elif type_ == NBT.nbt.TAG_LONG_ARRAY:
+    value0.value = list(value)
+  elif type_ == NBT.nbt.TAG_STRING:
+    if not isinstance(value, str):
+      raise TypeError('value is not str')
+    value0.value = value
+  elif type_ == NBT.nbt.TAG_END:
+    value0.value = 0
+  elif isinstance(value0, NBT.nbt._TAG_Numeric):
+    value0.value = value
+  else:
+    raise ValueError('error type id {}'.format(type_))
+  print(value, end=": ")
+  print(value0)
+  return value0
+
+def jsonToNbt(value):
+  nbtf = NBT.nbt.NBTFile()
+  nbtf.tags = _jsonToNbt(json.loads(value)).tags
+  return nbtf
+
+################## HELPER ##################
+
+def _make_backup_files():
+  for file in config['need_backup']:
+    sc = os.path.join(config['server_path'], file)
+    tg = os.path.join(config['backup_path'], file)
+    if os.path.exists(tg): rmfile(tg)
+    if os.path.exists(sc): copyfile(sc, tg, trycopyfunc=copymcfile)
+
+def copymcfile(src, drt):
+  if os.path.isfile(src):
+    try:
+      if src.endswith(('.dat', '.dat_old')):
+        debug_message('try change "{0}" to "{1}"'.format(src, drt))
+        jobj = nbtToJson(NBT.nbt.NBTFile(filename=src))
+        with open('{}.jnbt'.format(drt), 'w') as fd:
+          fd.write(jobj)
+        debug_message('change "{0}" to "{1}"'.format(src, drt))
+        return True
+      if src.endswith('.mca'):
+        debug_message('try change "{0}"(mca)'.format(src))
+        reg_file = NBT.region.RegionFile(filename=src)
+        x, z = 0, 0
+        while z < 32:
+          try:
+            jobj = nbtToJson(reg_file.get_chunk(x, z))
+            with open('{drt}.{x_z}.jreg'.format(drt=drt, x_z=z * 32 + x), 'w') as fd:
+              fd.write(jobj)
+            debug_message('change "{0}" to "{1}"({x}, {z})'.format(src,
+              '{drt}.{x_z}.jreg'.format(drt=drt, x_z=z * 32 + x), x=x, z=z))
+          except:
+              pass
+          x += 1
+          if x >= 32:
+            x = 0
+            z += 1
+        return True
+    except KeyboardInterrupt:
+      raise
+    except BaseException as e:
+      debug_message('err: ', e)
+  return False
+
+def copyfilemc(src, drt):
+  if os.path.isfile(src):
+    try:
+      if src.endswith('.jnbt'):
+        debug_message('try write "{0}" to "{1}"'.format(src, drt[:-5]))
+        with open(src, 'r') as fd:
+          nbt_ = jsonToNbt(fd.read())
+          nbt_.write_file(filename=drt[:-5])
+        debug_message('write "{0}" to "{1}"'.format(src, drt[:-5]))
+        return True
+      if src.endswith('.jreg'):
+        debug_message('try write "{0}"(mca)'.format(src))
+        drt0, x_z = drt[:-5].rsplit('.', 1)
+        x_z = int(x_z)
+        x, z = x_z % 32, x_z // 32
+        with open(src, 'r') as fd, open(drt0, 'r+b' if os.path.exists(drt0) else 'w+b') as reg_fd:
+          reg_file = NBT.region.RegionFile(fileobj=reg_fd)
+          reg_file.write_chunk(x, z, jsonToNbt(fd.read()))
+        debug_message('write "{0}"({x}, {z}) to "{1}"'.format(src, drt0, x=x, z=z))
+        return True
+    except KeyboardInterrupt:
+      raise
+    except BaseException as e:
+      debug_message('err: ', traceback.format_exc())
+  return False
 
 ################## UTILS ##################
 
@@ -596,11 +746,23 @@ def rmfile(tg):
   elif os.path.isfile(tg):
     os.remove(tg)
 
-def copyfile(src, drt):
+def copydir(src, drt, trycopyfunc=None):
+  debug_message('Copying dir "{0}" to "{1}"'.format(src, drt))
+  if not os.path.exists(drt): os.makedirs(drt)
+  for root, dirs, files in os.walk(src):
+    droot = os.path.join(drt, os.path.relpath(root, src))
+    for d in dirs:
+      d0 = os.path.join(droot, d)
+      if not os.path.exists(d0): os.mkdir(d0)
+    for f in files:
+      copyfile(os.path.join(root, f), os.path.join(droot, f), trycopyfunc=trycopyfunc)
+
+def copyfile(src, drt, trycopyfunc=None):
   debug_message('Copying "{0}" to "{1}"'.format(src, drt))
   if os.path.basename(src) in config['ignores']:
     return
   if os.path.isdir(src):
-    shutil.copytree(src, drt, ignore=shutil.ignore_patterns(*config['ignores']))
+    copydir(src, drt, trycopyfunc=trycopyfunc)
   elif os.path.isfile(src):
-    shutil.copy(src, drt)
+    if trycopyfunc is None or not trycopyfunc(src, drt):
+      shutil.copy(src, drt)
