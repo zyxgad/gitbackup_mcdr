@@ -36,10 +36,13 @@
     "debug": false, // 是否开启调试信息
     "git_path": "git", // git安装路径
     "git_config": {
+        "use_remote": false, // 是否使用远程功能, 默认为false禁用
         "remote": "https://github.com/user/repo.git", // 远程地址
         "remote_name": "backup", // 远程分支名称
         "branch_name": "backup", // 本地分支名称
-        "is_setup": false // 
+        "is_setup": false, // 
+        "user_email": "you@example.com", // git用户名邮箱
+        "user_name": "Your Name" // git用户名
     },
     "backup_interval": 86400, // 每次自动备份的时间间隔(sec), 设为0以禁用
     "last_backup_time": 0, // 上次进行备份的时间
