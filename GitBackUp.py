@@ -616,8 +616,6 @@ def _jsonToNbt(value, name=None):
     value0.value = value
   else:
     raise ValueError('error type id {}'.format(type_))
-  print(value, end=": ")
-  print(value0)
   return value0
 
 def jsonToNbt(value):
