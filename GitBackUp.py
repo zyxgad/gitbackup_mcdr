@@ -305,13 +305,13 @@ def command_back_backup(source: MCDR.CommandSource, bid):
     ecode, out = run_git_cmd('reset', '--hard', bkid)
     if ecode == 0:
       if os.path.exists(config['cache_path']): rmfile(config['cache_path'])
-      copyfile(config['server_path'], config['cache_path'])
+      copydir(config['server_path'], config['cache_path'], walk=file_walker if config['debug'] else None)
       for file in config['need_backup']:
         if file == '.gitignore': continue
         tg = os.path.join(config['server_path'], file)
         sc = os.path.join(config['backup_path'], file)
         if os.path.exists(tg): rmfile(tg)
-        if os.path.exists(sc): copyfile(sc, tg, trycopyfunc=copyfilemc)
+        if os.path.exists(sc): copyto(sc, tg, trycopyfunc=copyfilemc, call_walk=file_walker)
       server.logger.info('[GBU] Backup to {date}({common}) SUCCESS'.format(date=date, common=common))
     else:
       server.logger.info('[GBU] Backup to {date}({common}) ERROR:\n{err}'.format(date=date, common=common, err=out))
@@ -625,12 +625,29 @@ def jsonToNbt(value):
 
 ################## HELPER ##################
 
+def dir_walker(size):
+  current = 0
+  while True:
+    f = yield
+    current += 1
+    SERVER_OBJ.logger.info('file "{f}" {c}/{a}({c_a})', f=f, c=current, a=size, c_a=int(current / size * 100))
+    if current >= size:
+      break
+  yield
+  return
+
+def file_walker(size):
+  if isinstance(size, int):
+    return dir_walker(size)
+  else:
+    SERVER_OBJ.logger.info('file "{f}"', f=f)
+
 def _make_backup_files():
   for file in config['need_backup']:
     sc = os.path.join(config['server_path'], file)
     tg = os.path.join(config['backup_path'], file)
     if os.path.exists(tg): rmfile(tg)
-    if os.path.exists(sc): copyfile(sc, tg, trycopyfunc=copymcfile)
+    if os.path.exists(sc): copyto(sc, tg, trycopyfunc=copymcfile, call_walk=file_walker)
 
 def copymcfile(src, drt):
   if os.path.isfile(src):
@@ -744,23 +761,40 @@ def rmfile(tg):
   elif os.path.isfile(tg):
     os.remove(tg)
 
-def copydir(src, drt, trycopyfunc=None):
+def copydir(src, drt, trycopyfunc=None, walk=None):
   debug_message('Copying dir "{0}" to "{1}"'.format(src, drt))
   if not os.path.exists(drt): os.makedirs(drt)
+  prefilelist = []
   for root, dirs, files in os.walk(src):
     droot = os.path.join(drt, os.path.relpath(root, src))
     for d in dirs:
+      if d in config['ignores']: continue
       d0 = os.path.join(droot, d)
       if not os.path.exists(d0): os.mkdir(d0)
     for f in files:
-      copyfile(os.path.join(root, f), os.path.join(droot, f), trycopyfunc=trycopyfunc)
+      if f in config['ignores']: continue
+      prefilelist.append((os.path.join(root, f), os.path.join(droot, f)))
 
-def copyfile(src, drt, trycopyfunc=None):
+  if walk is not None:
+    walker = walk(len(prefilelist))
+    walker.send(None)
+  for f in prefilelist:
+    copyfile(f[0], f[1], trycopyfunc=trycopyfunc, successcall=(lambda f: walker.send(f)) if walk is not None else None)
+
+def copyfile(src, drt, trycopyfunc=None, successcall=None):
+  debug_message('Copying file "{0}" to "{1}"'.format(src, drt))
+  if os.path.basename(src) in config['ignores']:
+    return
+  
+  if trycopyfunc is None or not trycopyfunc(src, drt):
+    shutil.copy(src, drt)
+  successcall is not None and successcall(src)
+
+def copyto(src, drt, trycopyfunc=None, call_walk=None):
   debug_message('Copying "{0}" to "{1}"'.format(src, drt))
   if os.path.basename(src) in config['ignores']:
     return
   if os.path.isdir(src):
-    copydir(src, drt, trycopyfunc=trycopyfunc)
+    copydir(src, drt, trycopyfunc=trycopyfunc, walk=call_walk)
   elif os.path.isfile(src):
-    if trycopyfunc is None or not trycopyfunc(src, drt):
-      shutil.copy(src, drt)
+    copyfile(src, drt, trycopyfunc=trycopyfunc, successcall=call_walk)
