@@ -2,9 +2,10 @@
 import os
 import sys
 import io
-import subprocess
 import shutil
+import subprocess
 import traceback
+import functools
 import json
 import time
 import nbt as NBT
@@ -13,7 +14,7 @@ import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'git_backup',
-  'version': '1.2.1',
+  'version': '1.2.2',
   'name': 'GitBackUp',
   'description': 'Minecraft Git Backup Plugin',
   'author': 'zyxgad',
@@ -92,6 +93,38 @@ abort_callback = None
 
 backup_timer = None
 need_backup = False
+
+def check_doing(source: MCDR.CommandSource):
+  global what_is_doing
+  if what_is_doing is None:
+    return True
+  send_message(source, f'Error: is {what_is_doing} now')
+  return False
+
+def change_doing(source: MCDR.CommandSource, sth: str):
+  global what_is_doing
+  if what_is_doing is None:
+    what_is_doing = sth
+    return True
+  send_message(source, f'Error: is {what_is_doing} now')
+  return False
+
+def clear_doing():
+  global what_is_doing
+  what_is_doing = None
+
+def new_doing(sth: str):
+  def _(call):
+    @functools.wraps(call)
+    def warp_call(source: MCDR.CommandSource, *args, **kwargs):
+      if not change_doing(sth):
+        return None
+      try:
+        return call(source, *args, **kwargs)
+      finally:
+        clear_doing()
+    return warp_call
+  return _
 
 def debug_message(*args, **kwargs):
   if config['debug']:
@@ -209,31 +242,23 @@ def command_list_backup(source: MCDR.CommandSource, limit: int or None = None):
     '------------ git backups ------------')
   send_message(source, msg, prefix='')
 
+@new_doing('making backup')
 def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
-  global what_is_doing
-  if what_is_doing is not None:
-    send_message(source, f'Error: is {what_is_doing} now')
-    flushTimer0()
-    return
-  what_is_doing = 'making backup'
-
   common = ('"{date}"' if common is None else '"{date}={common}"').format(date=get_format_time(), common=common)
 
   @MCDR.new_thread('GBU')
+  @new_doing('making backup')
   def call():
-    global what_is_doing
     send_message(source, 'Making backup {}...'.format(common))
     _make_backup_files()
     send_message(source, 'Commiting backup {}...'.format(common))
     run_git_cmd('add', '--all')
     ecode, out = run_git_cmd('commit', '-m', common)
     if ecode != 0:
-      what_is_doing = None
       send_message(source, 'Make backup {0} ERROR:\n{1}'.format(common, out))
       flushTimer0()
       return
 
-    what_is_doing = None
     send_message(source, 'Make backup {} SUCCESS'.format(common))
     flushTimer0()
 
@@ -243,27 +268,19 @@ def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
       _command_push_backup(source)
 
   global game_saved_callback
-  game_saved_callback = call
+  game_saved_callback = lambda: (clear_doing(), call())
 
   send_message(source, "Saving the game")
   source.get_server().execute('save-all flush')
 
 def command_back_backup(source: MCDR.CommandSource, bid):
-  global what_is_doing
-  if what_is_doing is not None:
-    send_message(source, f'Error: is {what_is_doing} now')
-    return
+  if not check_doing(source): return
 
   bkid, date, common = get_backup_info(int(bid[1:]) if isinstance(bid, str) and bid[0] == ':' else bid)
 
   @MCDR.new_thread('GBU')
+  @new_doing('backing')
   def call(source: MCDR.CommandSource):
-    global what_is_doing
-    if what_is_doing is not None:
-      send_message(source, f'Error: is {what_is_doing} now')
-      return
-    what_is_doing = 'backuping'
-
     server = source.get_server()
 
     abort = [False]
@@ -283,7 +300,6 @@ def command_back_backup(source: MCDR.CommandSource, bid):
       time.sleep(1)
       if abort[0]:
         server.broadcast('[GBU] 已取消回档')
-        what_is_doing = None
         return
       t -= 1
 
@@ -294,7 +310,6 @@ def command_back_backup(source: MCDR.CommandSource, bid):
     if abort[0]:
       server.logger.info('[GBU] 已取消回档')
       server.start()
-      what_is_doing = None
       return
     t = -1
 
@@ -318,8 +333,6 @@ def command_back_backup(source: MCDR.CommandSource, bid):
     server.logger.info('[GBU] Starting server')
     server.start()
 
-    what_is_doing = None
-
   def call2(source: MCDR.CommandSource):
     global confirm_callback
     source.get_server().broadcast('[GBU] 已取消准备回档')
@@ -330,8 +343,7 @@ def command_back_backup(source: MCDR.CommandSource, bid):
     '`确认回档至{date}({common}) `'.format(Prefix, date=date, common=common),
     format_command('{0} abort'.format(Prefix)), '`撤销回档'))
   global confirm_callback, abort_callback
-  confirm_callback = call
-  abort_callback = call2
+  confirm_callback, abort_callback = call, call2
 
 def command_confirm(source: MCDR.CommandSource):
   global confirm_callback
@@ -353,26 +365,20 @@ def command_abort(source: MCDR.CommandSource):
 def command_push_backup(source: MCDR.CommandSource):
   _command_push_backup(source)
 
+@new_doing('pushing')
 def _command_push_backup(source: MCDR.CommandSource):
   if not config['git_config']['use_remote']:
     send_message(source, 'Not allowed remote')
     return
-  global what_is_doing
-  if what_is_doing is not None:
-    send_message(source, f'Error: is {what_is_doing} now')
-    return
-  what_is_doing = 'pushing'
 
   send_message(source, 'Pushing backups')
   ecode, out = run_git_cmd('push', '-f', '-q')
   if ecode != 0:
     send_message(source, 'Push error:\n' + out)
-    what_is_doing = None
     return
 
   config['last_push_time'] = time.time()
   send_message(source, 'Push SUCCESS:\n' + out)
-  what_is_doing = None
 
 def command_pull_backup(source: MCDR.CommandSource):
   send_message(source, '功能开发中')
@@ -385,15 +391,13 @@ def on_load(server :MCDR.ServerInterface, prev_module):
 
   load_config(server)
   need_backup = config['backup_interval'] > 0
-
+  clear_doing()
   if prev_module is None:
     server.logger.info('GitBackUp is on load')
   else:
     server.logger.info('GitBackUp is on reload')
     if need_backup and server.is_server_startup():
       flushTimer()
-
-  what_is_doing = None
 
   setup_git(server)
   register_command(server)
@@ -479,7 +483,7 @@ def setup_git(server: MCDR.ServerInterface):
       _run_git_cmd_hp('remote', 'set-url', config['git_config']['remote_name'], config['git_config']['remote'])
 
   with open(os.path.join(config['backup_path'], '.gitignore'), 'w') as fd:
-    fd.write('#Make by GitBackUp at {}\n'.format(get_format_time()))
+    fd.write('# Make by GitBackUp at {}\n'.format(get_format_time()))
     fd.writelines(config['ignores'])
 
   if config['git_config']['use_remote']:
@@ -550,79 +554,6 @@ def save_config(server: MCDR.ServerInterface, source: MCDR.CommandSource or None
     server.logger.info('Config file saved')
     send_message(source, '配置文件保存成功')
 
-################## NBT ##################
-
-def _nbtToJson(obj):
-  if obj is None:
-    return None
-  if isinstance(obj, NBT.nbt.TAG_Compound):
-    obj0 = dict()
-    for v in dict(obj).values():
-      obj0['{t}={v}'.format(t=v.__class__.id, v=v.name)] = _nbtToJson(v)
-    return obj0
-  if isinstance(obj, NBT.nbt.TAG_List):
-    obj0 = list()
-    for v in obj.tags:
-      obj0.append(_nbtToJson(v))
-    return (obj.tagID, obj0)
-  if isinstance(obj, (NBT.nbt.TAG_Byte_Array, NBT.nbt.TAG_Int_Array, NBT.nbt.TAG_Long_Array)):
-    return list(obj.value)
-  if isinstance(obj, NBT.nbt._TAG_Numeric):
-    return obj.value
-  if isinstance(obj, NBT.nbt._TAG_End):
-    return 0
-  return obj.value
-
-def nbtToJson(obj):
-  return json.dumps(_nbtToJson(obj), indent=0, separators=(',', ':'))
-
-def _jsonToNbt(value, name=None):
-  type_ = None
-  if name is not None:
-    t_n = name.split('=', 1)
-    type_, name = t_n if len(t_n) == 2 else (None, name)
-    type_ = int(type_)
-  # print(value)
-  if type_ is None:
-    if isinstance(value, dict):
-      type_ = NBT.nbt.TAG_COMPOUND
-    elif isinstance(value, list) and len(value) == 2 and isinstance(value[1], list):
-      type_ = NBT.nbt.TAG_LIST
-    if type_ is None:
-      raise RuntimeError('type is None')
-  value0 = NBT.nbt.TAGLIST[type_](name=name)
-  if type_ == NBT.nbt.TAG_COMPOUND:
-    for k, v in value.items():
-      nbt_ = _jsonToNbt(v, k)
-      if nbt_ is not None: value0.tags.append(nbt_)
-  elif type_ == NBT.nbt.TAG_LIST:
-    value0.tagID, value = value
-    for v in value:
-      nbt_ = _jsonToNbt(v, name='{}='.format(value0.tagID))
-      if nbt_ is not None: value0.tags.append(nbt_)
-  elif type_ == NBT.nbt.TAG_BYTE_ARRAY:
-    value0.value = bytearray(value)
-  elif type_ == NBT.nbt.TAG_INT_ARRAY:
-    value0.value = list(value)
-  elif type_ == NBT.nbt.TAG_LONG_ARRAY:
-    value0.value = list(value)
-  elif type_ == NBT.nbt.TAG_STRING:
-    if not isinstance(value, str):
-      raise TypeError('value is not str')
-    value0.value = value
-  elif type_ == NBT.nbt.TAG_END:
-    value0.value = 0
-  elif isinstance(value0, NBT.nbt._TAG_Numeric):
-    value0.value = value
-  else:
-    raise ValueError('error type id {}'.format(type_))
-  return value0
-
-def jsonToNbt(value):
-  nbtf = NBT.nbt.NBTFile()
-  nbtf.tags = _jsonToNbt(json.loads(value)).tags
-  return nbtf
-
 ################## HELPER ##################
 
 def dir_walker(size):
@@ -654,18 +585,18 @@ def copymcfile(src, drt):
     try:
       if src.endswith(('.dat', '.dat_old')):
         debug_message('try change "{0}" to "{1}"'.format(src, drt))
-        jobj = nbtToJson(NBT.nbt.NBTFile(filename=src))
+        jobj = NBT.nbtToJson(NBT.NBTFile(filename=src))
         with open('{}.jnbt'.format(drt), 'w') as fd:
           fd.write(jobj)
         debug_message('change "{0}" to "{1}"'.format(src, drt))
         return True
       if src.endswith('.mca'):
         debug_message('try change "{0}"(mca)'.format(src))
-        reg_file = NBT.region.RegionFile(filename=src)
+        reg_file = NBT.RegionFile(filename=src)
         x, z = 0, 0
         while z < 32:
           try:
-            jobj = nbtToJson(reg_file.get_chunk(x, z))
+            jobj = NBT.nbtToJson(reg_file.get_chunk(x, z))
             with open('{drt}.{x_z}.jreg'.format(drt=drt, x_z=z * 32 + x), 'w') as fd:
               fd.write(jobj)
             debug_message('change "{0}" to "{1}"({x}, {z})'.format(src,
@@ -689,7 +620,7 @@ def copyfilemc(src, drt):
       if src.endswith('.jnbt'):
         debug_message('try write "{0}" to "{1}"'.format(src, drt[:-5]))
         with open(src, 'r') as fd:
-          nbt_ = jsonToNbt(fd.read())
+          nbt_ = NBT.jsonToNbt(fd.read())
           nbt_.write_file(filename=drt[:-5])
         debug_message('write "{0}" to "{1}"'.format(src, drt[:-5]))
         return True
@@ -699,8 +630,8 @@ def copyfilemc(src, drt):
         x_z = int(x_z)
         x, z = x_z % 32, x_z // 32
         with open(src, 'r') as fd, open(drt0, 'r+b' if os.path.exists(drt0) else 'w+b') as reg_fd:
-          reg_file = NBT.region.RegionFile(fileobj=reg_fd)
-          reg_file.write_chunk(x, z, jsonToNbt(fd.read()))
+          reg_file = NBT.RegionFile(fileobj=reg_fd)
+          reg_file.write_chunk(x, z, NBT.jsonToNbt(fd.read()))
         debug_message('write "{0}"({x}, {z}) to "{1}"'.format(src, drt0, x=x, z=z))
         return True
     except KeyboardInterrupt:
