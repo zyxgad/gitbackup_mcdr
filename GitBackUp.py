@@ -126,7 +126,7 @@ def clear_doing():
 def new_doing(sth: str):
   def _(call):
     @functools.wraps(call)
-    def warp_call(source: MCDR.CommandSource, *args, **kwargs):
+    def warp_call(source: MCDR.CommandSource=None, *args, **kwargs):
       if not change_doing(source, sth):
         return None
       try:
@@ -137,31 +137,23 @@ def new_doing(sth: str):
   return _
 
 def set_confirm_callback(source: MCDR.CommandSource or None, call):
-  if source is not None and not source.is_user:
-    return
   global confirm_callback
-  confirm_callback[None if source is None else (source.get_name() if source.is_player else '')] = call
+  confirm_callback[None if source is None else (source.player if source.is_player else '')] = call
 
 def cancel_confirm_callback(source: MCDR.CommandSource or None, call=None):
-  if source is not None and not source.is_user:
-    return
   global confirm_callback
-  sname = None if source is None else (source.get_name() if source.is_player else '')
+  sname = None if source is None else (source.player if source.is_player else '')
   if call is not None and confirm_callback.get(sname, None) is not call:
     return False
   return confirm_callback.pop(sname, None) is not None
 
 def set_abort_callback(source: MCDR.CommandSource or None, call):
-  if source is not None and not source.is_user:
-    returns
   global abort_callback
-  abort_callback[None if source is None else (source.get_name() if source.is_player else '')] = call
+  abort_callback[None if source is None else (source.player if source.is_player else '')] = call
 
 def cancel_abort_callback(source: MCDR.CommandSource or None, call=None):
-  if source is not None and not source.is_user:
-    return
   global abort_callback
-  sname = None if source is None else (source.get_name() if source.is_player else '')
+  sname = None if source is None else (source.player if source.is_player else '')
   if call is not None and abort_callback.get(sname, None) is not call:
     return False
   return abort_callback.pop(sname, None) is not None
@@ -245,9 +237,9 @@ def format_command(command: str, text=None, color=MCDR.RColor.yellow, styles=MCD
   return MCDR.RText(text, color=color, styles=styles).c(MCDR.RAction.run_command, command)
 
 def format_git_list(source: MCDR.CommandSource, string, bkid, date, common):
-  return (format_command('{0} back {1}'.format(Prefix, bkid), string, color=MCDR.RColor.blue).
+  return (format_command('{0} back {1}'.format(Prefix, bkid), string + '\n', color=MCDR.RColor.blue).
     h(f'hash: {bkid}\n', f'date: {date}\n', f'common: {common}\n', '点击回档') if source.is_player else
-    MCDR.RText(string + f'  hash: {bkid}\n  date: {date}\n  common: {common}\n', color=MCDR.RColor.blue))
+    MCDR.RText(f'{string}\n  hash: {bkid}\n  date: {date}\n  common: {common}\n', color=MCDR.RColor.blue))
 
 ######## COMMANDS ########
 
@@ -256,20 +248,20 @@ def command_help(source: MCDR.CommandSource):
 
 @MCDR.new_thread('GBU')
 def command_status(source: MCDR.CommandSource):
-  dir_size = get_size(config['backup_path'])
-  dir_true_size = get_size(os.path.join(config['backup_path'], '.git'))
+  dir_size = get_size(config['backup_path']) / (1024 * 1024)
+  dir_true_size = get_size(os.path.join(config['backup_path'], '.git')) / (1024 * 1024)
   tmnow = time.time()
   bkid, date, common = get_backup_info(1)
   msg = MCDR.RTextList('------------ git backups ------------\n',
-'当前时间: {}\n'.format(get_format_time(tmnow)), format_git_list(source, '最近一次备份: {}\n'.format(bkid[:16]), bkid, date, common),
-'下次备份将在{backup_tout:.1f}秒后进行\n\
-下次推送将在{push_tout:.1f}秒后进行\n\
-备份文件夹总大小:{dir_size}\n\
-  实际大小:{dir_true_size}\n\
-  缓存大小:{dir_cache_size}\n\
------------- git backups ------------'.format(
-    backup_tout=float(max(config['backup_interval'] - (tmnow - config['last_backup_time']), 0)),
-    push_tout=float(max(config['push_interval'] - (tmnow - config['last_push_time']), 0))),
+'当前时间: {}\n'.format(get_format_time(tmnow)), format_git_list(source, '最近一次备份: {}'.format(bkid[:16]), bkid, date, common),
+'''下次备份将在{backup_tout:.1f}秒后进行
+下次推送将在{push_tout:.1f}秒后进行
+备份文件夹总大小:{dir_size:.2f}MB
+  实际大小:{dir_true_size:.2f}MB
+  缓存大小:{dir_cache_size:.2f}MB
+------------ git backups ------------'''.format(
+    backup_tout=max(float(config['backup_interval'] - (tmnow - config['last_backup_time'])), 0.0),
+    push_tout=max(float(config['push_interval'] - (tmnow - config['last_push_time'])), 0.0)),
     dir_size=dir_size,
     dir_true_size=dir_true_size,
     dir_cache_size=dir_size - dir_true_size
@@ -284,14 +276,14 @@ def command_list_backup(source: MCDR.CommandSource, limit: int or None = None):
     return
   lines = out.splitlines()
   bkid, date, common = parse_backup_info(lines[0])
-  latest = format_git_list(source, '{}\n'.format(bkid[:16]), bkid, date, common)
+  latest = format_git_list(source, bkid[:16], bkid, date, common)
   msg = MCDR.RText('------------ git backups ------------\n')
   debug_message('whiling lines', len(lines))
   i = 0
   while i < len(lines):
     debug_message('parsing line:', i, ':', lines[i])
     bkid, date, common = parse_backup_info(lines[i])
-    msg = MCDR.RTextList(msg, format_git_list(source, '{0}: {1}: {2}\n'.format(i + 1, bkid[:16], common), bkid, date, common))
+    msg = MCDR.RTextList(msg, format_git_list(source, '{0}: {1}: {2}'.format(i + 1, bkid[:16], common), bkid, date, common))
     i += 1
   msg = MCDR.RTextList(msg,
     '共{}条备份, 最近一次备份为: '.format(i), latest,
@@ -304,7 +296,7 @@ def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
 
   @MCDR.new_thread('GBU')
   @new_doing('making backup')
-  def call():
+  def call(_): # MCDR.CommandSource(None)
     start_time = time.time()
     broadcast_message('Making backup {}...'.format(common))
     _make_backup_files()
@@ -316,7 +308,7 @@ def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
       flushTimer0()
       return
     use_time = time.time() - start_time
-    broadcast_message('Make backup {common} SUCCESS, use time {time:.2f}'.format(common=common, time=use_time))
+    broadcast_message('Make backup {common} SUCCESS, use time {time:.2f}sec'.format(common=common, time=use_time))
     flushTimer0()
 
     if config['git_config']['use_remote'] and config['push_interval'] > 0 and \
@@ -408,7 +400,9 @@ def command_back_backup(source: MCDR.CommandSource, bid):
 
 def command_confirm(source: MCDR.CommandSource):
   global confirm_callback
-  call = confirm_callback.pop(source, None)
+  debug_message('confirm_callback:', confirm_callback)
+  debug_message('source.player:', source.player)
+  call = confirm_callback.pop(source.player, None)
   if call is None:
     call = confirm_callback.pop(None, None)
     if call is None:
@@ -418,7 +412,7 @@ def command_confirm(source: MCDR.CommandSource):
 
 def command_abort(source: MCDR.CommandSource):
   global abort_callback
-  call = abort_callback.pop(source, None)
+  call = abort_callback.pop(source.player, None)
   if call is None:
     call = abort_callback.pop(None, None)
     if call is None:
@@ -812,7 +806,7 @@ def dir_walker(size):
   while True:
     f = yield
     current += 1
-    SERVER_OBJ.logger.info('file "{f}" {c}/{a}({c_a})', f=f, c=current, a=size, c_a=int(current / size * 100))
+    log_info('file "{f}" {c}/{a}({c_a})'.format(f=f, c=current, a=size, c_a=int(current / size * 100)))
     if current >= size:
       break
   yield
@@ -822,7 +816,7 @@ def file_walker(size):
   if isinstance(size, int):
     return dir_walker(size)
   else:
-    SERVER_OBJ.logger.info('file "{f}"', f=f)
+    log_info('file "{f}"', f=f)
 
 def _make_backup_files():
   for file in config['need_backup']:
