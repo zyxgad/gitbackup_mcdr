@@ -83,7 +83,7 @@ HelpMessage = '''
 {0} list [<limit>] 列出所有/<limit>条备份
 {0} make [<comment>] 创建新备份
 {0} back [:<index>|<hash id>] 恢复到指定id
-{0} confirm <id> 确认回档
+{0} confirm 确认回档
 {0} abort 取消回档
 {0} reload 重新加载配置文件
 {0} save 保存配置文件
@@ -475,8 +475,10 @@ def on_unload(server: MCDR.ServerInterface):
   need_backup = False
   flushTimer()
 
-  global SERVER_OBJ
+  global SERVER_OBJ, helper_manager
   SERVER_OBJ = None
+  helper_manager.clear()
+  helper_manager = None
 
 def on_remove(server: MCDR.ServerInterface):
   global need_backup
@@ -740,7 +742,7 @@ class HelperProcess(Process):
       task = self._tasks.get()
       if task == HelperProcess.EXIT_CODE:
         break
-      t = Thread(target=lambda: task.start(self._task_return))
+      t = Thread(target=lambda: task.start(self._task_return), name='gbu-helper-thr-{}'.format(task.__class__.__name__))
       t.start()
       self.__threads.append(t)
     self.close()
@@ -797,12 +799,13 @@ class HelperManager:
         helper[1].wait_task()
         helper[0] -= 1
 
-  def close(self):
+  def clear(self):
     for _, h in self.__helper_list:
       h.close()
     self.__helper_list.clear()
 
-  __del__ = close
+  def __del__(self):
+    self.clear()
 
 def dir_walker(size):
   current = 0
@@ -917,7 +920,7 @@ def rmfile(tg: str):
 def copydir(src: str, drt: str, trycopyfunc=None, walk=None):
   debug_message('Copying dir "{0}" to "{1}"'.format(src, drt))
   if not os.path.exists(drt): os.makedirs(drt)
-  prefilelist = []
+  filelist = []
   for root, dirs, files in os.walk(src):
     droot = os.path.join(drt, os.path.relpath(root, src))
     for d in dirs:
@@ -926,22 +929,24 @@ def copydir(src: str, drt: str, trycopyfunc=None, walk=None):
       if not os.path.exists(d0): os.mkdir(d0)
     for f in files:
       if f in config['ignores']: continue
-      prefilelist.append((os.path.join(root, f), os.path.join(droot, f)))
+      filelist.append((os.path.join(root, f), os.path.join(droot, f)))
 
-  if walk is not None:
-    walker = walk(len(prefilelist))
+  successcall = None
+  if callable(walk):
+    walker = walk(len(filelist))
     walker.send(None)
-  for f in prefilelist:
-    copyfile(f[0], f[1], trycopyfunc=trycopyfunc, successcall=(lambda f: walker.send(f)) if walk is not None else None)
+    successcall = lambda f: walker.send(f)
+  for f in filelist:
+    copyfile(f[0], f[1], trycopyfunc=trycopyfunc, successcall=successcall)
 
 def copyfile(src: str, drt: str, trycopyfunc=None, successcall=None):
   debug_message('Copying file "{0}" to "{1}"'.format(src, drt))
   if os.path.basename(src) in config['ignores']:
     return
   
-  if trycopyfunc is None or not trycopyfunc(src, drt):
+  if callable(trycopyfunc) or not trycopyfunc(src, drt):
     shutil.copy(src, drt)
-  successcall is not None and successcall(src)
+  if callable(successcall): successcall(src)
 
 def copyto(src: str, drt: str, trycopyfunc=None, call_walk=None):
   debug_message('Copying "{0}" to "{1}"'.format(src, drt))

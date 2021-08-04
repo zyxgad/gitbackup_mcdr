@@ -82,7 +82,7 @@
 - `!!gbk list [<limit>]` 列出`所有/<limit>`条备份
 - `!!gbk make [<comment>]` 创建新备份
 - `!!gbk back [:<index>|<hash id>]` 恢复到指定id
-- `!!gbk confirm <id>` 确认回档
+- `!!gbk confirm` 确认回档
 - `!!gbk abort` 取消回档
 - `!!gbk reload` 重新加载配置文件
 - `!!gbk save` 保存配置文件
