@@ -3,7 +3,7 @@
 
 ## 依赖
 - **mcdreforged** >= ***1.0.0***
-- **nbt** *<https://github.com/twoolie/NBT>*
+- **nbt** *<https://github.com/zyxgad/nbt>*
 
 ## 功能
 - 支持本地保存备份
