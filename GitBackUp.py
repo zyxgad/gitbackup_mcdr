@@ -127,7 +127,7 @@ def new_doing(sth: str):
   def _(call):
     @functools.wraps(call)
     def warp_call(source: MCDR.CommandSource, *args, **kwargs):
-      if not change_doing(sth):
+      if not change_doing(source, sth):
         return None
       try:
         return call(source, *args, **kwargs)
