@@ -17,7 +17,7 @@ import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'git_backup',
-  'version': '1.2.5',
+  'version': '1.2.6',
   'name': 'GitBackUp',
   'description': 'Minecraft Git Backup Plugin',
   'author': 'zyxgad',
@@ -187,12 +187,13 @@ def parse_backup_info(line: str):
 
 def get_backup_info(bid: str or int):
   use_hash = True
+  bid_ = bid
   if isinstance(bid, int):
     use_hash = False
-    bid = '-{}'.format(bid)
+    bid_ = '-{}'.format(bid_)
   elif not isinstance(bid, str):
     raise TypeError('bid must be "int" or "str"')
-  ecode, out = run_git_cmd('log', '--pretty=oneline', '--no-decorate', bid, '--')
+  ecode, out = run_git_cmd('log', '--pretty=oneline', '--no-decorate', bid_, '--')
   if ecode != 0:
     raise RuntimeError('Get log error: ({0}){1}'.format(ecode, out))
   lines = out.splitlines()
@@ -571,7 +572,8 @@ def setup_git(server: MCDR.ServerInterface):
 
   with open(os.path.join(config['backup_path'], '.gitignore'), 'w') as fd:
     fd.write('# Make by GitBackUp at {}\n'.format(get_format_time()))
-    fd.writelines(config['ignores'])
+    fd.write('\n'.join(config['ignores']))
+    fd.write('\n*.gbu')
 
   if config['git_config']['use_remote']:
     log_info('git remote: {}'.format(config['git_config']['remote']))
@@ -712,7 +714,7 @@ def dir_walker(size):
     if not f[0]:
       copyfile(f[1], f[2])
     current += 1
-    log_info('file "{f}" {c}/{a} ({c_a}%)'.format(f=f[1], c=current, a=size, c_a=int(current / size * 100)))
+    log_info('file "{f1}"->"{f2}" {c}/{a} ({c_a}%)'.format(f1=f[1], f2=f[2], c=current, a=size, c_a=int(current / size * 100)))
     if current >= size:
       break
   yield
@@ -724,13 +726,12 @@ def file_walker(s):
   else:
     if not s[0]:
       copyfile(s[1], s[2])
-    log_info('file "{f}"'.format(f=s[1]))
+    log_info('file "{f1}"->"{f2}"'.format(f1=s[1], f2=s[2]))
 
 def _make_backup_files():
   for file in config['need_backup']:
     sc = os.path.join(config['server_path'], file)
     tg = os.path.join(config['backup_path'], file)
-    if os.path.exists(tg): rmfile(tg)
     if os.path.exists(sc): copyto(sc, tg, trycopyfunc=copymcfile, call_walk=file_walker)
 
 def copymcfile(src, drt):
@@ -822,15 +823,20 @@ def rmfile(tg: str):
 
 def copydir(src: str, drt: str, trycopyfunc=None, walk=None):
   debug_message('Copying dir "{0}" to "{1}"'.format(src, drt))
-  if os.path.exists(drt): shutil.rmtree(drt)
-  os.makedirs(drt)
+  if not os.path.exists(drt): os.makedirs(drt)
   filelist = []
   for root, dirs, files in os.walk(src):
     droot = os.path.join(drt, os.path.relpath(root, src))
     for d in dirs:
       if d in config['ignores']: continue
       d0 = os.path.join(droot, d)
-      if not os.path.exists(d0): os.mkdir(d0)
+      if os.path.exists(d0):
+        for f in os.listdir(d0):
+          file = os.path.join(d0, f)
+          if os.path.isfile(file) and not f.endswith('.gbu'):
+            os.remove(file)
+      else:
+        os.mkdir(d0)
     for f in files:
       if f in config['ignores']: continue
       filelist.append((os.path.join(root, f), os.path.join(droot, f)))
@@ -850,9 +856,9 @@ def copydir(src: str, drt: str, trycopyfunc=None, walk=None):
 
 def copyfile(src: str, drt: str, trycopyfunc=None, successcall=None):
   debug_message('Copying file "{0}" to "{1}"'.format(src, drt))
-  if os.path.basename(src) in config['ignores']:
+  if os.path.basename(src) in config['ignores'] or src.endswith('.gbu'):
     return
-  
+
   if not (callable(trycopyfunc) and trycopyfunc(src, drt)):
     shutil.copy(src, drt)
   if callable(successcall): successcall((True, src, drt))
