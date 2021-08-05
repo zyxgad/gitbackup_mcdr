@@ -9,18 +9,15 @@ import functools
 import json
 import time
 import nbt as NBT
-import multiprocessing
-try:
-  from multiprocessing.context import ForkProcess as Process
-except ImportError:
-  from multiprocessing.context import SpawnProcess as Process
-from threading import Timer, Thread
+from threading import Timer
+
+import taskhelper
 
 import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'git_backup',
-  'version': '1.2.3',
+  'version': '1.2.4',
   'name': 'GitBackUp',
   'description': 'Minecraft Git Backup Plugin',
   'author': 'zyxgad',
@@ -123,6 +120,14 @@ def clear_doing():
   global what_is_doing
   what_is_doing = None
 
+def try_doing(call):
+  @functools.wraps(call)
+  def warp_call(source: MCDR.CommandSource=None, *args, **kwargs):
+    if not check_doing(source):
+      return None
+    return call(source, *args, **kwargs)
+  return warp_call
+
 def new_doing(sth: str):
   def _(call):
     @functools.wraps(call)
@@ -171,7 +176,7 @@ def broadcast_message(*args, sep=' ', prefix=MSG_ID):
     SERVER_OBJ.broadcast(MCDR.RTextList(prefix, args[0], *([MCDR.RTextList(sep, a) for a in args][1:])))
 
 def log_info(*args, sep=' ', prefix=MSG_ID):
-  if SERVER_OBJ is None:
+  if SERVER_OBJ is not None:
     SERVER_OBJ.logger.info(MCDR.RTextList(prefix, args[0], *([MCDR.RTextList(sep, a) for a in args][1:])))
 
 def parse_backup_info(line: str):
@@ -226,8 +231,8 @@ def flushTimer0():
   global need_backup
   config['last_backup_time'] = time.time()
   if need_backup:
-    broadcast_message(
-      'Flush backup timer\n[GBU] the next backup will make after {:.1f} sec'.format(float(config['backup_interval'])))
+    broadcast_message('Flush backup timer\n{id}the next backup will make after {int:.1f}sec'.
+      format(int=float(config['backup_interval']), id=MSG_ID))
     flushTimer()
 
 ######## something packer ########
@@ -261,11 +266,11 @@ def command_status(source: MCDR.CommandSource):
   缓存大小:{dir_cache_size:.2f}MB
 ------------ git backups ------------'''.format(
     backup_tout=max(float(config['backup_interval'] - (tmnow - config['last_backup_time'])), 0.0),
-    push_tout=max(float(config['push_interval'] - (tmnow - config['last_push_time'])), 0.0)),
+    push_tout=max(float(config['push_interval'] - (tmnow - config['last_push_time'])), 0.0),
     dir_size=dir_size,
     dir_true_size=dir_true_size,
     dir_cache_size=dir_size - dir_true_size
-  )
+  ))
   send_message(source, msg, prefix='')
 
 @MCDR.new_thread('GBU')
@@ -290,7 +295,7 @@ def command_list_backup(source: MCDR.CommandSource, limit: int or None = None):
     '------------ git backups ------------')
   send_message(source, msg, prefix='')
 
-@new_doing('making backup')
+@new_doing('pre making backup')
 def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
   common = ('"{date}"' if common is None else '"{date}={common}"').format(date=get_format_time(), common=common)
 
@@ -323,14 +328,18 @@ def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
   broadcast_message("Saving the game...")
   source.get_server().execute('save-all flush')
 
+@try_doing
 def command_back_backup(source: MCDR.CommandSource, bid):
-  if not check_doing(source): return
+  if not check_doing(source):
+    return
 
   bkid, date, common = get_backup_info(int(bid[1:]) if isinstance(bid, str) and bid[0] == ':' else bid)
 
   @MCDR.new_thread('GBU')
   @new_doing('backing')
   def call(source: MCDR.CommandSource):
+    cancel_abort_callback(source, call2)
+
     server = source.get_server()
 
     abort = [False]
@@ -352,6 +361,8 @@ def command_back_backup(source: MCDR.CommandSource, bid):
         return
       t -= 1
 
+    cancel_abort_callback(None, call)
+
     server.stop()
     log_info('Wait for server to stop')
     server.wait_for_start()
@@ -361,8 +372,6 @@ def command_back_backup(source: MCDR.CommandSource, bid):
       server.start()
       return
     t = -1
-
-    cancel_abort_callback(source, call)
 
     log_info('Backup now')
     ecode, out = run_git_cmd('reset', '--hard', bkid)
@@ -401,8 +410,7 @@ def command_back_backup(source: MCDR.CommandSource, bid):
 def command_confirm(source: MCDR.CommandSource):
   global confirm_callback
   debug_message('confirm_callback:', confirm_callback)
-  debug_message('source.player:', source.player)
-  call = confirm_callback.pop(source.player, None)
+  call = confirm_callback.pop(source.player if source.is_player else '', None)
   if call is None:
     call = confirm_callback.pop(None, None)
     if call is None:
@@ -412,7 +420,7 @@ def command_confirm(source: MCDR.CommandSource):
 
 def command_abort(source: MCDR.CommandSource):
   global abort_callback
-  call = abort_callback.pop(source.player, None)
+  call = abort_callback.pop(source.player if source.is_player else '', None)
   if call is None:
     call = abort_callback.pop(None, None)
     if call is None:
@@ -471,8 +479,9 @@ def on_unload(server: MCDR.ServerInterface):
 
   global SERVER_OBJ, helper_manager
   SERVER_OBJ = None
-  helper_manager.clear()
-  helper_manager = None
+  if helper_manager is not None:
+    helper_manager.clear()
+    helper_manager = None
 
 def on_remove(server: MCDR.ServerInterface):
   global need_backup
@@ -510,13 +519,13 @@ def setup_git(server: MCDR.ServerInterface):
   ecode, out = run_sh_cmd('{git} --version'.format(git=config['git_path']))
   if ecode != 0:
     raise RuntimeError('Can not found git at "{}"'.format(config['git_path']))
-  log_info(out)
+  log_info(out.strip())
 
   if not os.path.isdir(config['backup_path']): os.makedirs(config['backup_path'])
 
   def _run_git_cmd_hp(child, *args):
     ecode, out = run_git_cmd(child, *args)
-    log_info(out)
+    log_info(out.strip())
     if ecode != 0:
       raise RuntimeError('Init git error({0}): {1}'.format(ecode, out))
   
@@ -539,8 +548,8 @@ def setup_git(server: MCDR.ServerInterface):
   else:
     _run_git_cmd_hp('config', 'user.email', '"{}"'.format(config['git_config']['user_email']))
     _run_git_cmd_hp('config', 'user.name', '"{}"'.format(config['git_config']['user_name']))
-  log_info('git email: ' + run_git_cmd('config', 'user.email')[1])
-  log_info('git user: ' + run_git_cmd('config', 'user.name')[1])
+  log_info('git email: ' + run_git_cmd('config', 'user.email')[1].strip())
+  log_info('git user: ' + run_git_cmd('config', 'user.name')[1].strip())
 
   if config['git_config']['use_remote']:
     ecode, out = run_git_cmd('remote', 'get-url', config['git_config']['remote_name'])
@@ -622,157 +631,12 @@ def save_config(server: MCDR.ServerInterface, source: MCDR.CommandSource or None
 
 ################## HELPER ##################
 
-class Task:
-  def __init__(self):
-    pass
-
-  def run(self):
-    raise RuntimeError()
-
-  def start(self, queue):
-    re = self.run()
-    queue.put(re)
-
-class EncodeTask(Task):
-  def __init__(self, src, drt, **kwargs):
-    super().__init__(**kwargs)
-    self.src = src
-    self.drt = drt
-
-class DecodeTask(Task):
-  def __init__(self, src, drt, **kwargs):
-    super().__init__(**kwargs)
-    self.src = src
-    self.drt = drt
-
-class EncodeNbtTask(EncodeTask):
-  def __init__(self, *args, **kwargs):
-    super().__init__(*args, **kwargs)
-
-  def run(self):
-    try:
-      debug_message('try change "{0}" to "{1}"'.format(src, drt))
-      jobj = NBT.nbtToJson(NBT.NBTFile(filename=self.src))
-      with open('{}.jnbt'.format(self.drt), 'w') as fd:
-        fd.write(jobj)
-      debug_message('change "{0}" to "{1}.jnbt"'.format(src, drt))
-      return True
-    except:
-      copyfile(self.src, self.drt)
-      return True
-
-class DecodeNbtTask(DecodeTask):
-  def __init__(self, *args, **kwargs):
-    super().__init__(*args, **kwargs)
-
-  def run(self):
-    try:
-      debug_message('try write "{0}" to "{1}"'.format(src, drt[:-5]))
-      with open(self.src, 'r') as fd:
-        nbt_ = NBT.jsonToNbt(fd.read())
-        nbt_.write_file(filename=self.drt[:-5])
-      debug_message('write "{0}" to "{1}"'.format(src, drt[:-5]))
-      return True
-    except:
-      print('Decode nbt error:', traceback.format_exc())
-      return False
-
-class EncodeRegTask(EncodeTask):
-  def __init__(self, *args, **kwargs):
-    super().__init__(*args, **kwargs)
-
-  def run(self):
-    try:
-      debug_message('try change "{0}" to "{1}"'.format(self.src, self.drt))
-      reg_file = NBT.RegionFile(filename=self.src)
-      with open('{drt}.jreg'.format(drt=self.drt), 'w') as fd:
-        chunks = NBT.TAG_Compound()
-        for m in reg_file.get_metadata():
-          chunk = reg_file.get_nbt(m.x, m.z)
-          chunk.name = hex(m.x + m.z * 32)[2:]
-          chunks.tags.append(chunk)
-        fd.write(NBT.nbtToJson(chunks))
-      debug_message('change "{0}" to "{1}.jreg"'.format(self.src, self.drt))
-      return True
-    except:
-      copyfile(self.src, self.drt)
-      return True
-
-class DecodeRegTask(DecodeTask):
-  def __init__(self, *args, **kwargs):
-    super().__init__(*args, **kwargs)
-
-  def run(self):
-    try:
-      debug_message('try write "{0}"(mca)'.format(self.src))
-      drt0 = self.drt[:-5]
-      with open(self.src, 'r') as fd:
-        chunks = NBT.jsonToNbt(fd.read()).tags
-        with open(drt0, 'w+b') as reg_fd:
-          reg_file = NBT.RegionFile(fileobj=reg_fd)
-          for c in chunks:
-            x_z = int(c.name, 16)
-            x, z = x_z % 32, x_z // 32
-            print('write_chunk', c.name, x, z)
-            reg_file.write_chunk(x, z, c)
-      debug_message('write "{0}" to "{1}"'.format(self.src, drt0))
-      return True
-    except:
-      print('Decode reg error:', traceback.format_exc())
-      return False
-
-class HelperProcess(Process):
-  EXIT_CODE = 0x00
-
-  def __init__(self, *args, **kwargs):
-    super().__init__(*args, **kwargs)
-    self._isclose = False
-    self._tasks = multiprocessing.Queue()
-    self._task_return = multiprocessing.Queue()
-    self.__threads = []
-
-  def run(self):
-    while not self._isclose:
-      task = self._tasks.get()
-      if task == HelperProcess.EXIT_CODE:
-        break
-      t = Thread(target=lambda: task.start(self._task_return), name='gbu-helper-thr-{}'.format(task.__class__.__name__))
-      t.start()
-      self.__threads.append(t)
-    self.close()
-
-  def close(self):
-    if self._isclose:
-      return
-    self._isclose = True
-    threads = self.__threads
-    self.threads = []
-    for t in threads:
-      if t.is_alive():
-        t.join(timeout=0)
-    if not self._tasks._closed:
-      self._tasks.put(HelperProcess.EXIT_CODE)
-
-  __del__ = close
-
-  def run_task(self, task):
-    assert isinstance(task, Task)
-    self._tasks.put(task)
-    self._tasks._poll()
-
-  def wait_task(self):
-    re = self._task_return.get()
-    return re
-
-  def _flush_threads(self):
-    for i, t in enumerate(self.__threads):
-      if not t.is_alive():
-        self.__threads.pop(i)
-
 class HelperManager:
   def __init__(self, helpers: int):
     self._helpers = helpers
-    self.__helper_list = [[0, HelperProcess(name='gbu-helper-{}'.format(i + 1))] for i in range(self._helpers)]
+    self.__helper_list = [[0, taskhelper.HelperProcess(name='gbu-helper-{}'.format(i + 1))] for i in range(self._helpers)]
+    for _, h in self.__helper_list:
+      h.start()
 
   @property
   def helpers(self):
@@ -785,12 +649,15 @@ class HelperManager:
 
   def add_task(self, task):
     self.__helper_list = sorted(self.__helper_list, key=lambda o: o[0])
-    self.__helper_list[0]['helper'].run_task(task)
+    h = self.__helper_list[0]
+    h[1].run_task(task)
+    h[0] += 1
 
-  def wait_task_all(self):
+  def wait_task_all(self, call=None):
     for helper in self.__helper_list:
       while helper[0] > 0:
-        helper[1].wait_task()
+        re = helper[1].wait_task()
+        if callable(call): call(re)
         helper[0] -= 1
 
   def clear(self):
@@ -805,18 +672,22 @@ def dir_walker(size):
   current = 0
   while True:
     f = yield
+    if not f[0]:
+      copyfile(f[1], f[2])
     current += 1
-    log_info('file "{f}" {c}/{a}({c_a})'.format(f=f, c=current, a=size, c_a=int(current / size * 100)))
+    log_info('file "{f}" {c}/{a} ({c_a}%)'.format(f=f[1], c=current, a=size, c_a=int(current / size * 100)))
     if current >= size:
       break
   yield
   return
 
-def file_walker(size):
-  if isinstance(size, int):
-    return dir_walker(size)
+def file_walker(s):
+  if isinstance(s, int):
+    return dir_walker(s)
   else:
-    log_info('file "{f}"', f=f)
+    if not s[0]:
+      copyfile(s[1], s[2])
+    log_info('file "{f}"'.format(f=s[1]))
 
 def _make_backup_files():
   for file in config['need_backup']:
@@ -824,26 +695,27 @@ def _make_backup_files():
     tg = os.path.join(config['backup_path'], file)
     if os.path.exists(tg): rmfile(tg)
     if os.path.exists(sc): copyto(sc, tg, trycopyfunc=copymcfile, call_walk=file_walker)
-  helper_manager.wait_task_all()
 
 def copymcfile(src, drt):
   if os.path.isfile(src):
     if src.endswith(('.dat', '.dat_old')):
-      helper_manager.add_task(EncodeNbtTask(src, drt))
+      helper_manager.add_task(taskhelper.EncodeNbtTask(src, drt))
       return True
     if src.endswith(('.mca', '.mcr')):
-      helper_manager.add_task(EncodeRegTask(src, drt))
+      helper_manager.add_task(taskhelper.EncodeRegTask(src, drt))
       return True
+  debug_message('use native copy', src, drt)
   return False
 
 def copyfilemc(src, drt):
   if os.path.isfile(src):
     if src.endswith('.jnbt'):
-      helper_manager.add_task(DecodeNbtTask(src, drt))
+      helper_manager.add_task(taskhelper.DecodeNbtTask(src, drt))
       return True
     if src.endswith('.jreg'):
-      helper_manager.add_task(DecodeRegTask(src, drt))
+      helper_manager.add_task(taskhelper.DecodeRegTask(src, drt))
       return True
+  debug_message('use native copy', src, drt)
   return False
 
 ################## UTILS ##################
@@ -913,7 +785,8 @@ def rmfile(tg: str):
 
 def copydir(src: str, drt: str, trycopyfunc=None, walk=None):
   debug_message('Copying dir "{0}" to "{1}"'.format(src, drt))
-  if not os.path.exists(drt): os.makedirs(drt)
+  if os.path.exists(drt): shutil.rmtree(drt)
+  os.makedirs(drt)
   filelist = []
   for root, dirs, files in os.walk(src):
     droot = os.path.join(drt, os.path.relpath(root, src))
@@ -931,16 +804,20 @@ def copydir(src: str, drt: str, trycopyfunc=None, walk=None):
     walker.send(None)
     successcall = lambda f: walker.send(f)
   for f in filelist:
-    copyfile(f[0], f[1], trycopyfunc=trycopyfunc, successcall=successcall)
+    debug_message('Copying file "{0}" to "{1}"'.format(f[0], f[1]))
+    if not (callable(trycopyfunc) and trycopyfunc(f[0], f[1])):
+      shutil.copy(f[0], f[1])
+      successcall(src)
+    helper_manager.wait_task_all(successcall)
 
 def copyfile(src: str, drt: str, trycopyfunc=None, successcall=None):
   debug_message('Copying file "{0}" to "{1}"'.format(src, drt))
   if os.path.basename(src) in config['ignores']:
     return
   
-  if callable(trycopyfunc) or not trycopyfunc(src, drt):
+  if not (callable(trycopyfunc) and trycopyfunc(src, drt)):
     shutil.copy(src, drt)
-  if callable(successcall): successcall(src)
+  if callable(successcall): successcall((True, src, drt))
 
 def copyto(src: str, drt: str, trycopyfunc=None, call_walk=None):
   debug_message('Copying "{0}" to "{1}"'.format(src, drt))
