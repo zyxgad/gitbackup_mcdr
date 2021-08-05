@@ -29,7 +29,6 @@ class HelperProcess(Process):
     self._isclose = False
     self._tasks = multiprocessing.Queue()
     self._task_return = multiprocessing.Queue()
-    self.__threads = []
 
   def run(self):
     try:
@@ -37,23 +36,20 @@ class HelperProcess(Process):
         task = self._tasks.get()
         if task == HelperProcess.EXIT_CODE:
           break
-        t = Thread(target=lambda: task.start(self._task_return), name='gbu-helper-thr-{}'.format(task.__class__.__name__))
+        t = Thread(target=lambda: task.start(self._task_return),
+          name='gbu-helper-thr-{}'.format(task.__class__.__name__), daemon=True)
         t.start()
-        self.__threads.append(t)
     except KeyboardInterrupt:
       pass
     finally:
       self.close()
+      if not self._tasks._closed: self._tasks.close()
+      if not self._task_return._closed: self._task_return.close()
 
   def close(self):
     if self._isclose:
       return
     self._isclose = True
-    threads = self.__threads
-    self.threads = []
-    for t in threads:
-      if t.is_alive():
-        t.join(timeout=0)
     if not self._tasks._closed:
       self._tasks.put(HelperProcess.EXIT_CODE)
 
@@ -71,7 +67,3 @@ class HelperProcess(Process):
   def task_empty(self):
     return self._task_return.empty()
 
-  def _flush_threads(self):
-    for i, t in enumerate(self.__threads):
-      if not t.is_alive():
-        self.__threads.pop(i)

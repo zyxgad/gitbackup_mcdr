@@ -189,7 +189,7 @@ def get_backup_info(bid: str or int):
   use_hash = True
   if isinstance(bid, int):
     use_hash = False
-    bid = '-{}'.foramt(bid)
+    bid = '-{}'.format(bid)
   elif not isinstance(bid, str):
     raise TypeError('bid must be "int" or "str"')
   ecode, out = run_git_cmd('log', '--pretty=oneline', '--no-decorate', bid, '--')
@@ -623,11 +623,11 @@ def register_command(server: MCDR.ServerInterface):
 def load_config(server: MCDR.ServerInterface, source: MCDR.CommandSource or None = None):
   global config
   try:
-    config = {}
+    config = default_config.copy()
     with open(CONFIG_FILE) as file:
       js = json.load(file)
-    for key in default_config.keys():
-      config[key] = (js if key in js else default_config)[key]
+      for key in js.keys():
+        config[key] = js[key]
     log_info('Config file loaded')
     send_message(source, '配置文件加载成功')
   except:
@@ -645,9 +645,11 @@ def save_config(server: MCDR.ServerInterface, source: MCDR.CommandSource or None
 ################## HELPER ##################
 
 class HelperManager:
-  def __init__(self, helpers: int):
-    self._helpers = helpers
-    self.__helper_list = [[0, taskhelper.HelperProcess(name='gbu-helper-{}'.format(i)), 0] for i in range(1, 1 + self._helpers)]
+  def __init__(self, helpers: int=1):
+    self._helpers = 0
+    self.__helper_list = []
+    # self.__helper_list = [[0, taskhelper.HelperProcess(name='gbu-helper-{}'.format(i)), 0] for i in range(1, 1 + self._helpers)]
+    self.helpers = helpers
     for h in self.__helper_list:
       h[1].start()
 
@@ -659,6 +661,8 @@ class HelperManager:
   def helpers(self, helpers):
     assert isinstance(helpers, int) and helpers > 0, "Must be number and large than 0"
     self._helpers = helpers
+    for i in range(len(self.__helper_list), self._helpers):
+      self.__helper_list.append([0, taskhelper.HelperProcess(name='gbu-helper-{}'.format(i + 1)), 0])
 
   def add_task(self, task):
     self.__helper_list = sorted(self.__helper_list, key=lambda o: o[2])
@@ -679,12 +683,12 @@ class HelperManager:
       debug_message('after wait helper:', hex(id(helper[1])), helper)
       call(re)
 
-    while True:
-      for helper in waits.copy():
+    while len(waits) > 0:
+      for i, helper in enumerate(waits):
         while not helper[1].task_empty():
           re_one(helper)
         if helper[0] == 0:
-          waits.remove(helper)
+          waits.pop(i)
       if len(waits) == 0:
         break
       helper = sorted(waits, key=lambda o: o[2], reverse=True)[0]
