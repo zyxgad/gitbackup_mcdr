@@ -52,6 +52,7 @@
     "backup_path": "./git_backup", // backup文件夹, git工作目录
     "cache_path": "./git_backup_cache", // 缓存文件夹, 会把回档之前的server文件夹
     "server_path": "./server", // 服务器文件夹
+    "helper_count": 1, // helper进程数量, 至少为1
     "need_backup": [ // 需要备份的文件名
         "world"
     ],

@@ -68,6 +68,9 @@ class HelperProcess(Process):
     re = self._task_return.get()
     return re
 
+  def task_empty(self):
+    return self._task_return.empty()
+
   def _flush_threads(self):
     for i, t in enumerate(self.__threads):
       if not t.is_alive():

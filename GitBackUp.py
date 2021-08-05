@@ -17,7 +17,7 @@ import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'git_backup',
-  'version': '1.2.4',
+  'version': '1.2.5',
   'name': 'GitBackUp',
   'description': 'Minecraft Git Backup Plugin',
   'author': 'zyxgad',
@@ -186,24 +186,24 @@ def parse_backup_info(line: str):
   return bkid, date, common
 
 def get_backup_info(bid: str or int):
-  ecode, out = run_git_cmd('log', '--pretty=oneline', '--no-decorate', '-{}'.format(bid) if isinstance(bid, int) else '')
+  use_hash = True
+  if isinstance(bid, int):
+    use_hash = False
+    bid = '-{}'.foramt(bid)
+  elif not isinstance(bid, str):
+    raise TypeError('bid must be "int" or "str"')
+  ecode, out = run_git_cmd('log', '--pretty=oneline', '--no-decorate', bid, '--')
   if ecode != 0:
     raise RuntimeError('Get log error: ({0}){1}'.format(ecode, out))
   lines = out.splitlines()
 
-  if isinstance(bid, int):
-    if len(lines) < bid:
-      raise ValueError('Index({}) is out of range'.format(bid))
-    return parse_backup_info(lines[bid - 1])
-  if isinstance(bid, str):
-    i = 0
-    while i < len(lines):
-      l = lines[i]
-      if l.startswith(bid):
-        return parse_backup_info(l)
-      i += 1
-    raise ValueError('Can not found commit by hash "{}"'.format(bid))
-  raise TypeError('bid must be "int" or "str"')
+  if use_hash:
+    if len(lines) == 0:
+      raise ValueError('Can not found commit by hash "{}"'.format(bid))
+    return parse_backup_info(lines[0])
+  if len(lines) < bid:
+    raise ValueError('Index {} is out of range'.format(bid))
+  return parse_backup_info(lines[bid - 1])
 
 def timerCall():
   global backup_timer, need_backup
@@ -231,8 +231,9 @@ def flushTimer0():
   global need_backup
   config['last_backup_time'] = time.time()
   if need_backup:
-    broadcast_message('Flush backup timer\n{id}the next backup will make after {int:.1f}sec'.
-      format(int=float(config['backup_interval']), id=MSG_ID))
+    broadcast_message('Flush backup timer\n', 
+      MSG_ID, 'the next backup will make after {intv:.1f}sec'.
+      format(intv=float(config['backup_interval'])), sep='')
     flushTimer()
 
 ######## something packer ########
@@ -257,9 +258,15 @@ def command_status(source: MCDR.CommandSource):
   dir_true_size = get_size(os.path.join(config['backup_path'], '.git')) / (1024 * 1024)
   tmnow = time.time()
   bkid, date, common = get_backup_info(1)
-  msg = MCDR.RTextList('------------ git backups ------------\n',
-'当前时间: {}\n'.format(get_format_time(tmnow)), format_git_list(source, '最近一次备份: {}'.format(bkid[:16]), bkid, date, common),
-'''下次备份将在{backup_tout:.1f}秒后进行
+  send_message(source, MCDR.RTextList('------------ git backups ------------\n',
+'''版本: v{version}
+当前时间: {tmnow}
+正在进行的事件: {doing}
+最近一次备份: '''.format(
+    version=PLUGIN_METADATA['version'],
+    tmnow=get_format_time(tmnow), doing=what_is_doing),
+    format_git_list(source, bkid[:16], bkid, date, common),
+    '''下次备份将在{backup_tout:.1f}秒后进行
 下次推送将在{push_tout:.1f}秒后进行
 备份文件夹总大小:{dir_size:.2f}MB
   实际大小:{dir_true_size:.2f}MB
@@ -270,8 +277,7 @@ def command_status(source: MCDR.CommandSource):
     dir_size=dir_size,
     dir_true_size=dir_true_size,
     dir_cache_size=dir_size - dir_true_size
-  ))
-  send_message(source, msg, prefix='')
+  )), prefix='')
 
 @MCDR.new_thread('GBU')
 def command_list_backup(source: MCDR.CommandSource, limit: int or None = None):
@@ -284,12 +290,10 @@ def command_list_backup(source: MCDR.CommandSource, limit: int or None = None):
   latest = format_git_list(source, bkid[:16], bkid, date, common)
   msg = MCDR.RText('------------ git backups ------------\n')
   debug_message('whiling lines', len(lines))
-  i = 0
-  while i < len(lines):
-    debug_message('parsing line:', i, ':', lines[i])
-    bkid, date, common = parse_backup_info(lines[i])
+  for i, l in enumerate(lines):
+    debug_message('parsing line:', i, ':', l)
+    bkid, date, common = parse_backup_info(l)
     msg = MCDR.RTextList(msg, format_git_list(source, '{0}: {1}: {2}'.format(i + 1, bkid[:16], common), bkid, date, common))
-    i += 1
   msg = MCDR.RTextList(msg,
     '共{}条备份, 最近一次备份为: '.format(i), latest,
     '------------ git backups ------------')
@@ -305,6 +309,8 @@ def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
     start_time = time.time()
     broadcast_message('Making backup {}...'.format(common))
     _make_backup_files()
+    source.get_server().execute('save-on')
+    broadcast_message("Enable auto save")
     broadcast_message('Commiting backup {}...'.format(common))
     run_git_cmd('add', '--all')
     ecode, out = run_git_cmd('commit', '-m', common)
@@ -325,15 +331,18 @@ def command_make_backup(source: MCDR.CommandSource, common: str or None = None):
   game_saved_callback = lambda: (clear_doing(), call())
 
   broadcast_message("Pre making backup")
+  source.get_server().execute('save-off')
+  broadcast_message("Disable auto save")
   broadcast_message("Saving the game...")
   source.get_server().execute('save-all flush')
 
 @try_doing
 def command_back_backup(source: MCDR.CommandSource, bid):
-  if not check_doing(source):
+  try:
+    bkid, date, common = get_backup_info(int(bid[1:]) if isinstance(bid, str) and bid[0] == ':' else bid)
+  except ValueError as e:
+    send_message(source, MCDR.RText(str(e), color=MCDR.RColor.red, styles=MCDR.RStyle.underlined))
     return
-
-  bkid, date, common = get_backup_info(int(bid[1:]) if isinstance(bid, str) and bid[0] == ':' else bid)
 
   @MCDR.new_thread('GBU')
   @new_doing('backing')
@@ -490,8 +499,11 @@ def on_remove(server: MCDR.ServerInterface):
   flushTimer()
   save_config(server)
 
-  global SERVER_OBJ
+  global SERVER_OBJ, helper_manager
   SERVER_OBJ = None
+  if helper_manager is not None:
+    helper_manager.clear()
+    helper_manager = None
 
 def on_server_startup(server: MCDR.ServerInterface):
   log_info('server is startup')
@@ -590,7 +602,8 @@ def register_command(server: MCDR.ServerInterface):
     then(get_literal_node('status').runs(command_status)).
     then(get_literal_node('list').
       runs(lambda src: command_list_backup(src, None)).
-      then(MCDR.Integer('limit').runs(lambda src, ctx: command_list_backup(src, ctx['limit'])))
+      then(MCDR.Integer('limit').requires(lambda src, ctx: ctx['limit'] > 0, lambda: 'limit 需要大于 0').
+        runs(lambda src, ctx: command_list_backup(src, ctx['limit'])))
     ).
     then(get_literal_node('make').
       runs(lambda src: command_make_backup(src, None)).
@@ -634,9 +647,9 @@ def save_config(server: MCDR.ServerInterface, source: MCDR.CommandSource or None
 class HelperManager:
   def __init__(self, helpers: int):
     self._helpers = helpers
-    self.__helper_list = [[0, taskhelper.HelperProcess(name='gbu-helper-{}'.format(i + 1))] for i in range(self._helpers)]
-    for _, h in self.__helper_list:
-      h.start()
+    self.__helper_list = [[0, taskhelper.HelperProcess(name='gbu-helper-{}'.format(i)), 0] for i in range(1, 1 + self._helpers)]
+    for h in self.__helper_list:
+      h[1].start()
 
   @property
   def helpers(self):
@@ -648,21 +661,41 @@ class HelperManager:
     self._helpers = helpers
 
   def add_task(self, task):
-    self.__helper_list = sorted(self.__helper_list, key=lambda o: o[0])
+    self.__helper_list = sorted(self.__helper_list, key=lambda o: o[2])
+    debug_message('helper list:', self.__helper_list)
     h = self.__helper_list[0]
     h[1].run_task(task)
     h[0] += 1
+    h[2] += os.stat(task.src).st_size
+    debug_message('after add current helper:', hex(id(h[1])), h)
 
   def wait_task_all(self, call=None):
-    for helper in self.__helper_list:
-      while helper[0] > 0:
-        re = helper[1].wait_task()
-        if callable(call): call(re)
-        helper[0] -= 1
+    if not callable(call): call = lambda _: None
+    waits = self.__helper_list.copy()
+    def re_one(helper):
+      re = helper[1].wait_task()
+      helper[0] -= 1
+      helper[2] -= os.stat(re[1]).st_size
+      debug_message('after wait helper:', hex(id(helper[1])), helper)
+      call(re)
+
+    while True:
+      for helper in waits.copy():
+        while not helper[1].task_empty():
+          re_one(helper)
+        if helper[0] == 0:
+          waits.remove(helper)
+      if len(waits) == 0:
+        break
+      helper = sorted(waits, key=lambda o: o[2], reverse=True)[0]
+      if helper[0] > 0:
+        re_one(helper)
+      if helper[0] == 0:
+        waits.pop(0)
 
   def clear(self):
-    for _, h in self.__helper_list:
-      h.close()
+    for h in self.__helper_list:
+      h[1].close()
     self.__helper_list.clear()
 
   def __del__(self):
@@ -798,6 +831,7 @@ def copydir(src: str, drt: str, trycopyfunc=None, walk=None):
       if f in config['ignores']: continue
       filelist.append((os.path.join(root, f), os.path.join(droot, f)))
 
+  debug_message('filelist:', filelist)
   successcall = None
   if callable(walk):
     walker = walk(len(filelist))
@@ -808,7 +842,7 @@ def copydir(src: str, drt: str, trycopyfunc=None, walk=None):
     if not (callable(trycopyfunc) and trycopyfunc(f[0], f[1])):
       shutil.copy(f[0], f[1])
       successcall(src)
-    helper_manager.wait_task_all(successcall)
+  helper_manager.wait_task_all(successcall)
 
 def copyfile(src: str, drt: str, trycopyfunc=None, successcall=None):
   debug_message('Copying file "{0}" to "{1}"'.format(src, drt))
