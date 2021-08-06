@@ -702,7 +702,11 @@ class HelperManager:
 
   def clear(self):
     for h in self.__helper_list:
-      h[1].exit()
+      if h[1].is_alive():
+        h[1].exit()
+    for h in self.__helper_list:
+      if h[1].is_alive():
+        h[1].join()
     self.__helper_list.clear()
 
   def __del__(self):

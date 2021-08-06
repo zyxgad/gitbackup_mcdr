@@ -43,8 +43,8 @@ class HelperProcess(Process):
       pass
     finally:
       self.exit()
-      if not self._tasks._closed: self._tasks.exit()
-      if not self._task_return._closed: self._task_return.exit()
+      if not self._tasks._closed: self._tasks.close()
+      if not self._task_return._closed: self._task_return.close()
 
   def exit(self):
     if self._isclose:
