@@ -10,6 +10,7 @@ import json
 import time
 import nbt as NBT
 from threading import Timer
+from multiprocessing import Queue
 
 import taskhelper
 
@@ -701,7 +702,7 @@ class HelperManager:
 
   def clear(self):
     for h in self.__helper_list:
-      h[1].close()
+      h[1].exit()
     self.__helper_list.clear()
 
   def __del__(self):
@@ -838,11 +839,11 @@ def copydir(src: str, drt: str, trycopyfunc=None, walk=None):
       else:
         os.mkdir(d0)
     for f in files:
-      if f in config['ignores']: continue
+      if f in config['ignores'] or f.endswith('.gbu'): continue
       filelist.append((os.path.join(root, f), os.path.join(droot, f)))
 
   debug_message('filelist:', filelist)
-  successcall = None
+  successcall = lambda _: None
   if callable(walk):
     walker = walk(len(filelist))
     walker.send(None)

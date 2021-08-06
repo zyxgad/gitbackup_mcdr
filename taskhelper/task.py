@@ -42,18 +42,18 @@ class HelperProcess(Process):
     except KeyboardInterrupt:
       pass
     finally:
-      self.close()
-      if not self._tasks._closed: self._tasks.close()
-      if not self._task_return._closed: self._task_return.close()
+      self.exit()
+      if not self._tasks._closed: self._tasks.exit()
+      if not self._task_return._closed: self._task_return.exit()
 
-  def close(self):
+  def exit(self):
     if self._isclose:
       return
     self._isclose = True
     if not self._tasks._closed:
       self._tasks.put(HelperProcess.EXIT_CODE)
 
-  __del__ = close
+  __del__ = exit
 
   def run_task(self, task):
     assert isinstance(task, Task)
