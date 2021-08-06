@@ -846,12 +846,12 @@ def copydir(src: str, drt: str, trycopyfunc=None, walk=None):
   if callable(walk):
     walker = walk(len(filelist))
     walker.send(None)
-    successcall = lambda f: walker.send(f)
+    successcall = walker.send
   for f in filelist:
     debug_message('Copying file "{0}" to "{1}"'.format(f[0], f[1]))
     if not (callable(trycopyfunc) and trycopyfunc(f[0], f[1])):
       shutil.copy(f[0], f[1])
-      successcall(src)
+      successcall((True, f[0], f[1]))
   helper_manager.wait_task_all(successcall)
 
 def copyfile(src: str, drt: str, trycopyfunc=None, successcall=None):
