@@ -527,7 +527,7 @@ def on_info(server: MCDR.ServerInterface, info: MCDR.Info):
         game_saved_callback()
         game_saved_callback = None
 
-@MCDR.new_thread('GBU')
+@MCDR.new_thread('GBU-setup')
 def setup_git(server: MCDR.ServerInterface):
   # check git
   ecode, out = run_sh_cmd('{git} --version'.format(git=config['git_path']))
@@ -706,7 +706,7 @@ class HelperManager:
         h[1].exit()
     for h in self.__helper_list:
       if h[1].is_alive():
-        h[1].join()
+        h[1].kill()
     self.__helper_list.clear()
 
   def __del__(self):
@@ -770,7 +770,7 @@ def run_sh_cmd(source: str):
   debug_message('Running command "{}"'.format(source))
   proc = subprocess.Popen(
     source, shell=True,
-    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=sys.stdin,
+    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     bufsize=-1)
   stdout0 = [b'', False]
   @MCDR.new_thread("GBU-Popen-reader")
